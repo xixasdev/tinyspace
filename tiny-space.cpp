@@ -1,5 +1,5 @@
-// tiny-space.cpp (v3 - experiment: basic serialization) (C++11)
-// AUTHOR: xixas | DATE: 2022.02.01 | LICENSE: WTFPL/PDM/CC0... your choice
+// tiny-space.cpp (v3 - experiment: snapshot serialization) (C++11)
+// AUTHOR: xixas | DATE: 2022.02.06 | LICENSE: WTFPL/PDM/CC0... your choice
 //
 // DESCRIPTION: Gaming: Space sim in a tiny package.
 //                      Work In Progress.
@@ -15,6 +15,7 @@
 //                                      | Added combat, killscreen, respawn
 // EXPERIMENTS:
 //           2022.02.01 | AUTHOR: xixas | Added basic XML serialization
+//           2022.02.06 | AUTHOR: xixas | Added background serialization
 
 
 #include <algorithm>
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
 #include <initializer_list>
 #include <iomanip>
 #include <iostream>
@@ -39,6 +41,7 @@
 #include <vector>
 
 
+using std::atomic;
 using std::chrono::duration;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -47,13 +50,176 @@ using std::cerr;
 using std::cout;
 using std::endl;
 using std::map;
+using std::make_shared;
+using std::ofstream;
+using std::ostream;
 using std::ostringstream;
 using std::pair;
 using std::set;
 using std::shared_ptr;
 using std::string;
 using std::thread;
+using std::unordered_set;
 using std::vector;
+
+
+// ---------------------------------------------------------------------------
+// SAVE STATE SYNC ATOMICS
+// ---------------------------------------------------------------------------
+
+
+std::atomic<bool> willSave(false);
+std::atomic<bool> isSaving(false);
+std::atomic<bool> saveComplete(false);
+std::atomic<bool> endGame(false);
+
+atomic<thread*> saveThread(nullptr);
+inline bool isSavingThread() {
+    if (!isSaving) return false;
+    thread* saveThreadPtr = saveThread.load();
+    if (!saveThreadPtr) return false;
+    return saveThreadPtr->get_id() == std::this_thread::get_id();
+}
+
+
+// ---------------------------------------------------------------------------
+// UPDATEABLE OBJECT REGISTRATION
+// ---------------------------------------------------------------------------
+
+
+struct Updateable;
+unordered_set<Updateable*> updateables_aftersave;
+struct Updateable {
+    Updateable() { updateables_aftersave.insert(this); }
+    virtual ~Updateable() { updateables_aftersave.erase(this); };
+    virtual void update() = 0;
+};
+void update_aftersave() { for (auto u : updateables_aftersave) u->update(); }
+
+
+// ---------------------------------------------------------------------------
+// GENERIC SNAPSHOT TEMPLATE CLASS AND TYPE ERASURE
+// ---------------------------------------------------------------------------
+
+
+template <typename T>
+class Saveable : public Updateable {
+    T *_live, *_snap;
+
+public:
+    Saveable() : Updateable() { _snap = _live = new T; }
+    Saveable(T const& t) : Updateable() { _snap = _live = new T(t); }
+    Saveable(T&& t) : Updateable() { _snap = _live = new T(t); }
+    Saveable(Saveable<T> const& o) : Updateable() { _snap = _live = new T(*o._live); }
+
+    ~Saveable() { if (_snap != _live) delete _snap; delete _live; }
+
+    void set(T const& t) { if (isSaving && _live == _snap) _live = new T(t); else *_live = t;}
+    void set(T&& t) { if (isSaving && _live == _snap) _live = new T(t); else *_live = t;}
+    void update() { if (_snap != _live) { delete _snap; _snap = _live; } }
+
+    T const& live() { return *_live; }
+    T const& snap() { return *_snap; }
+
+    Saveable<T>& operator =(T const& t) { set(t); return *this; }
+    Saveable<T>& operator =(T&& t) { set(t); return *this; }
+    Saveable<T>& operator =(Saveable<T> const& o) { set(*o._live); return *this; }
+
+    Saveable<T>& operator *=(T const& t) { set(*_live * t); return *this; }
+    Saveable<T>& operator /=(T const& t) { set(*_live / t); return *this; }
+    Saveable<T>& operator +=(T const& t) { set(*_live + t); return *this; }
+    Saveable<T>& operator -=(T const& t) { set(*_live - t); return *this; }
+
+    operator T const&() const { return isSavingThread() ? *_snap : *_live; }
+    T const& operator ()() const { return isSavingThread() ? *_snap : *_live; }
+    T const* operator ->() const { return isSavingThread() ? _snap : _live; }
+};
+template <typename T> inline ostream& operator <<(ostream& os, Saveable<T> const& o) { os << o(); return os; }
+
+
+template <typename T>
+class Saveable<T*> : public Updateable {
+    T *_live, *_snap;
+
+public:
+    Saveable() : Updateable() { _snap = _live = nullptr; }
+    Saveable(T* const& t) : Updateable() { _snap = _live = t; }
+    Saveable(Saveable<T*> const& o) : Updateable() { _snap = _live = o._live; }
+
+    ~Saveable() {}
+
+    void set(T* const& t) { if (!isSaving) _snap = t; _live = t; }
+    void update() { _snap = _live; }
+
+    T* const& live() { return _live; }
+    T* const& snap() { return _snap; }
+
+    Saveable<T*>& operator =(T* const& t) { set(t) ; return *this; }
+    Saveable<T*>& operator =(Saveable<T*> const& o) { set(o._live); return *this; }
+
+    operator T* const&() const { return isSavingThread() ? _snap : _live; }
+    T* const& operator ()() const { return isSavingThread() ? _snap : _live; }
+    T* const operator ->() const { return isSavingThread() ? _snap : _live; }
+};
+
+
+template <typename T>
+class Saveable<shared_ptr<T>> : public Updateable {
+    shared_ptr<T> _live, _snap;
+
+public:
+    Saveable() : Updateable() { _snap = _live = nullptr; }
+    Saveable(shared_ptr<T> const& t) : Updateable() { _snap = _live = t; }
+    Saveable(Saveable<shared_ptr<T>> const& o) : Updateable() { _snap = _live = o._live; }
+
+    ~Saveable() {}
+
+    void set(shared_ptr<T> const& t) { if (!isSaving) _snap = t; _live = t; }
+    void update() { _snap = _live; }
+
+    shared_ptr<T> const& live() { return _live; }
+    shared_ptr<T> const& snap() { return _snap; }
+
+    Saveable<shared_ptr<T>>& operator =(shared_ptr<T> const& t) { set(t); return *this; }
+    Saveable<shared_ptr<T>>& operator =(Saveable<shared_ptr<T>> const& o) { set(o._live); return *this; }
+
+    operator bool() const { return isSavingThread() ? _snap.get() : _live.get(); }
+    operator shared_ptr<T> const&() const { return isSavingThread() ? _snap : _live; }
+    shared_ptr<T> const& operator ()() const { return isSavingThread() ? _snap : _live; }
+    T const* operator ->() const { return isSavingThread() ? _snap.get() : _live.get(); }
+};
+
+
+template <typename T, typename U=float> struct Vector2;
+template <typename T, typename U=float> struct SaveableVector2 : public Vector2<Saveable<T>, U> {
+    SaveableVector2() : Vector2<Saveable<T>, U>() {}
+    SaveableVector2(T const& x, T const& y) : Vector2<Saveable<T>, U>(x, y) {}
+    SaveableVector2(Vector2<T,U> const& o) : Vector2<Saveable<T>, U>(o.x, o.y) {}
+    SaveableVector2(Vector2<Saveable<T>,U> const& o) : Vector2<Saveable<T>, U>(o.x, o.y) {}
+    ~SaveableVector2() {}
+
+    operator Vector2<T,U>() const { return (*this)(); }
+    Vector2<T,U> operator ()() const { return Vector2<T,U>{this->x, this->y}; }
+};
+template <typename T, typename U> inline Vector2<T,U> operator +(Vector2<Saveable<T>,U> const& lhs, Vector2<Saveable<T>,U> const& rhs) { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
+template <typename T, typename U> inline Vector2<T,U> operator +(Vector2<Saveable<T>,U> const& lhs, Vector2<T,U> const& rhs) { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
+template <typename T, typename U> inline Vector2<T,U> operator +(Vector2<T,U> const& lhs, Vector2<Saveable<T>,U> const& rhs) { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
+template <typename T, typename U> inline Vector2<T,U> operator -(Vector2<Saveable<T>,U> const& lhs, Vector2<Saveable<T>,U> const& rhs) { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
+template <typename T, typename U> inline Vector2<T,U> operator -(Vector2<Saveable<T>,U> const& lhs, Vector2<T,U> const& rhs) { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
+template <typename T, typename U> inline Vector2<T,U> operator -(Vector2<T,U> const& lhs, Vector2<Saveable<T>,U> const& rhs) { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
+
+template <typename T, typename U, typename V> inline Vector2<T,U> operator *(Vector2<Saveable<T>,U> const& lhs, Saveable<V> const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} * rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator *(Vector2<Saveable<T>,U> const& lhs, V const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} * rhs; }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator *(Vector2<T,U> const& lhs, Saveable<V> const& rhs) { return lhs * rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator /(Vector2<Saveable<T>,U> const& lhs, Saveable<V> const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} / rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator /(Vector2<Saveable<T>,U> const& lhs, V const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} / rhs; }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator /(Vector2<T,U> const& lhs, Saveable<V> const& rhs) { return lhs / rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator +(Vector2<Saveable<T>,U> const& lhs, Saveable<V> const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} + rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator +(Vector2<Saveable<T>,U> const& lhs, V const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} + rhs; }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator +(Vector2<T,U> const& lhs, Saveable<V> const& rhs) { return lhs + rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator -(Vector2<Saveable<T>,U> const& lhs, Saveable<V> const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} - rhs(); }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator -(Vector2<Saveable<T>,U> const& lhs, V const& rhs) { return Vector2<T,U>{lhs.x, lhs.y} - rhs; }
+template <typename T, typename U, typename V> inline Vector2<T,U> operator -(Vector2<T,U> const& lhs, Saveable<V> const& rhs) { return lhs.x - rhs(); }
 
 
 // ---------------------------------------------------------------------------
@@ -61,17 +227,66 @@ using std::vector;
 // ---------------------------------------------------------------------------
 
 
-template <typename T, typename U=float> struct Vector2;
-typedef size_t ID;
-typedef Vector2<int> v2int_t;
+// Forward declarations
+enum IDType : unsigned int;
+enum WeaponType : unsigned int;
+enum WeaponPosition : int;
+enum ShipType : unsigned int;
+enum ShipFaction : unsigned int;
+struct Ship;
+struct Sector;
+struct Destination;
+struct Weapon;
+struct HasIDAndSectorAndPosition;
+
+
+// Standard types
+typedef size_t          ID;
+typedef Vector2<int>    v2int_t;
 typedef Vector2<size_t> v2size_t;
-typedef Vector2<float> v2float_t;
-typedef v2float_t dimensions_t;
-typedef v2float_t position_t;
-typedef v2float_t direction_t;
-typedef float speed_t;
-typedef float distance_t;
-typedef pair<position_t, position_t> position_pair_t;
+typedef Vector2<float>  v2float_t;
+typedef v2float_t       dimensions_t;
+typedef v2float_t       position_t;
+typedef v2float_t       direction_t;
+typedef float           speed_t;
+typedef float           distance_t;
+
+typedef set<Ship*>      set_ship_ptr;
+typedef shared_ptr<Destination> destination_ptr;
+typedef shared_ptr<Weapon> weapon_ptr;
+typedef vector<weapon_ptr> vector_weapon_ptr;
+typedef HasIDAndSectorAndPosition* target_t;
+
+
+// Saveable types
+typedef Saveable<bool>          bool_s;
+typedef Saveable<float>         float_s;
+typedef Saveable<double>        double_s;
+typedef Saveable<int>           int_s;
+typedef Saveable<unsigned int>  unsigned_int_s;
+typedef Saveable<size_t>        size_s;
+typedef Saveable<string>        string_s;
+
+typedef Saveable<ID>             ID_s;
+typedef Saveable<IDType>         IDType_s;
+typedef Saveable<WeaponType>     WeaponType_s;
+typedef Saveable<WeaponPosition> WeaponPosition_s;
+typedef Saveable<ShipType>       ShipType_s;
+typedef Saveable<ShipFaction>    ShipFaction_s;
+
+typedef SaveableVector2<float> v2float_s;
+typedef v2float_s              dimensions_s;
+typedef v2float_s              position_s;
+typedef v2float_s              direction_s;
+typedef float_s                speed_s;
+typedef float_s                distance_s;
+
+typedef Saveable<set_ship_ptr>      set_ship_ptr_s;
+typedef Saveable<Sector*>           sector_ptr_s;
+typedef Saveable<destination_ptr>   destination_ptr_s;
+typedef Saveable<weapon_ptr>        weapon_ptr_s;
+typedef Saveable<vector_weapon_ptr> vector_weapon_ptr_s;
+typedef Saveable<target_t>          target_s;
 
 
 // ---------------------------------------------------------------------------
@@ -120,8 +335,6 @@ template <typename T, typename U> struct Vector2 {
     T angleRad2(Vector2<T,U> const& o) const { return -atan2(cross(o), dot(o)); }
     T angleDeg2(Vector2<T,U> const& o) const { return angleRad2(o) * 180.f / M_PI; }
 };
-template <typename T, typename U> inline Vector2<T,U> operator +(Vector2<T,U> const& lhs, Vector2<T,U> const& rhs) { return {lhs.x + rhs.x, lhs.y + rhs.y}; }
-template <typename T, typename U> inline Vector2<T,U> operator -(Vector2<T,U> const& lhs, Vector2<T,U> const& rhs) { return {lhs.x - rhs.x, lhs.y - rhs.y}; }
 template <typename T, typename U> inline std::ostream& operator <<(std::ostream& os, const Vector2<T,U>& o) { os << '{' << o.x << ',' << o.y << '}'; return os; }
 
 
@@ -133,10 +346,10 @@ struct XmlSerializable {
 };
 
 
-enum IDType { IDType_NONE, IDType_Sector, IDType_Jumpgate, IDType_Station, IDType_Ship, IDType_Weapon, IDType_END };
+enum IDType : unsigned int { IDType_NONE, IDType_Sector, IDType_Jumpgate, IDType_Station, IDType_Ship, IDType_Weapon, IDType_END };
 struct HasID {
-    ID id;
-    IDType idType;
+    ID_s id;
+    IDType_s idType;
 
     HasID(IDType const& idType) : id(++curId), idType(idType) {}
     HasID(ID const& id, IDType const& idType) : id(id), idType(idType) {}
@@ -149,43 +362,42 @@ ID HasID::curId = 0;
 
 
 struct HasCode {
-    string code;
+    string_s code;
 
     HasCode(string const& code="") : code(code) {}
 };
 
 
 struct HasName {
-    string name;
+    string_s name;
 
     HasName(string const& name="") : name(name) {}
 };
 
 
 struct HasSize {
-    dimensions_t size;
+    dimensions_s size;
 
     HasSize(dimensions_t const& size={0, 0}) : size(size) {}
 };
 
 
 struct HasPosition {
-    position_t position;
+    position_s position;
 
     HasPosition(position_t const& position={0, 0}) : position(position) {}
 };
 
 
 struct HasDirection {
-    direction_t direction;
+    direction_s direction;
 
     HasDirection(direction_t const& direction={0, 0}) : direction(direction) {}
 };
 
 
-typedef float speed_t;
 struct HasSpeed {
-    speed_t speed;
+    speed_s speed;
 
     HasSpeed(speed_t const& speed=0) : speed(speed) {}
 };
@@ -193,7 +405,7 @@ struct HasSpeed {
 
 struct Sector;
 struct HasSector {
-    Sector* sector;
+    sector_ptr_s sector;
 
     HasSector(Sector* const sector=nullptr) : sector(sector) {}
 };
@@ -220,10 +432,8 @@ struct HasIDAndSectorAndPosition : public HasID, public HasSectorAndPosition {
 };
 
 
-struct Destination;
-typedef shared_ptr<Destination> destination_ptr;
 struct HasDestination {
-    destination_ptr destination;
+    destination_ptr_s destination;
 
     HasDestination(destination_ptr destination=nullptr) : destination(destination) {}
 };
@@ -275,17 +485,23 @@ struct SectorJumpgates {
 struct Ship;
 struct Station;
 struct Sector: public HasID, public HasName, public HasSize, public XmlSerializable {
+private:
+    set_ship_ptr_s _ships;
+
+public:
     pair<size_t, size_t> rowcol; // row and column in the universe (sectors)
     SectorNeighbors neighbors;
     SectorJumpgates jumpgates;
     set<Station*>   stations;
-    set<Ship*>      ships;
+    set_ship_ptr_s const& ships = _ships;
 
     Sector(pair<size_t, size_t> rowcol, string const& name="", dimensions_t const& size={0, 0})
-        : HasID(IDType_Sector), HasName(name), HasSize(size), rowcol(rowcol), neighbors(), ships() {}
+        : HasID(IDType_Sector), HasName(name), HasSize(size), rowcol(rowcol), neighbors(), _ships() {}
 
     Sector(ID const& id, pair<size_t, size_t> rowcol, string const& name="", dimensions_t const& size={0, 0})
-        : HasID(id, IDType_Sector), HasName(name), HasSize(size), rowcol(rowcol), neighbors(), ships() {}
+        : HasID(id, IDType_Sector), HasName(name), HasSize(size), rowcol(rowcol), neighbors(), _ships() {}
+
+    void setShips(set_ship_ptr&& ships) { _ships = ships; }
 
     string xml_tagname() override;
     string xml_serialize(string const& indent="") override;
@@ -327,22 +543,22 @@ struct Destination : public HasSectorAndPosition {
     Destination(Sector& sector, position_t const& position)
         : HasSectorAndPosition(&sector, position), object(nullptr) {}
 
-    Sector* currentSector() { return object ? object->sector : sector; }
-    position_t currentPosition() { return object ? object->position : position; }
+    Sector* currentSector() const { return object ? object->sector : sector; }
+    position_t currentPosition() const { return object ? object->position : position; }
 };
 
 
-enum WeaponType { WeaponType_NONE, WeaponType_Pulse, WeaponType_Cannon, WeaponType_Beam, WeaponType_END };
-enum WeaponPosition { WeaponPosition_Bow=0, WeaponPosition_Port=-1, WeaponPosition_Starboard=1, WeaponPosition_END };
+enum WeaponType : unsigned int { WeaponType_NONE, WeaponType_Pulse, WeaponType_Cannon, WeaponType_Beam, WeaponType_END };
+enum WeaponPosition : int { WeaponPosition_Bow=0, WeaponPosition_Port=-1, WeaponPosition_Starboard=1, WeaponPosition_END };
 struct Weapon : public HasID, XmlSerializable {
     WeaponType type;
     bool isTurret;
-    HasIDAndSectorAndPosition* parent;
-    HasIDAndSectorAndPosition* target;
+    target_t parent;
+    target_s target;
     // weaponPosition designates forward mount (0), left (-1), or right (1) -- doesn't apply to turrets
     // these values can be considered 90 degree directional multipliers
     WeaponPosition weaponPosition;
-    float cooldown;
+    float_s cooldown;
     
     Weapon(WeaponType type, bool isTurret, WeaponPosition weaponPosition, HasIDAndSectorAndPosition& parent)
         :
@@ -361,9 +577,8 @@ struct Weapon : public HasID, XmlSerializable {
 };
 
 
-typedef shared_ptr<Weapon> weapon_ptr;
 // ship type in order of priority of target importance, least to greatest, all civilian ships first
-enum ShipType { ShipType_NONE, ShipType_Courier, ShipType_Transport, ShipType_Scout, ShipType_Corvette, ShipType_Frigate, ShipType_END };
+enum ShipType : unsigned int { ShipType_NONE, ShipType_Courier, ShipType_Transport, ShipType_Scout, ShipType_Corvette, ShipType_Frigate, ShipType_END };
 string shipClass(ShipType const& shipType) {
     switch (shipType) {
         case ShipType_Courier:   return "Courier";
@@ -384,21 +599,37 @@ string paddedShipClass(ShipType const& shipType) {
         default:                 return "         ";
     }
 }
-enum ShipFaction { ShipFaction_Neutral, ShipFaction_Player, ShipFaction_Friend, ShipFaction_Foe, ShipFaction_END };
+enum ShipFaction : unsigned int { ShipFaction_Neutral, ShipFaction_Player, ShipFaction_Friend, ShipFaction_Foe, ShipFaction_END };
 struct Ship : public HasIDAndSectorAndPosition,
               public HasCode, public HasName,
               public HasDirection, public HasSpeed,
               public HasDestination,
               public XmlSerializable
 {
-    ShipType                   type;
-    ShipFaction                faction;
-    unsigned int               maxHull, currentHull;
-    vector<weapon_ptr>         weapons;
-    vector<weapon_ptr>         turrets;
-    HasIDAndSectorAndPosition* target;
-    bool                       docked;
-    double                     timeout; // used any time the ship needs a delay (docked, dead, etc)
+private:
+    vector_weapon_ptr_s _weapons;
+    vector_weapon_ptr_s _turrets;
+
+public:
+    ShipType_s                 type;
+    ShipFaction_s              faction;
+    unsigned_int_s             maxHull, currentHull;
+    vector_weapon_ptr_s const& weapons = _weapons;
+    vector_weapon_ptr_s const& turrets = _turrets;
+    target_s                   target;
+    bool_s                     docked;
+    double_s                   timeout; // used any time the ship needs a delay (docked, dead, etc)
+
+    Ship(Ship&& o)
+        :
+        HasIDAndSectorAndPosition(o.id, o.idType, o.sector, o.position),
+        HasName(o.name), HasCode(o.code),
+        HasDirection(o.direction), HasSpeed(o.speed),
+        HasDestination(o.destination),
+        type(o.type), maxHull(o.maxHull), currentHull(o.currentHull),
+        faction(o.faction),
+        _weapons(std::move(o._weapons)), _turrets(std::move(o._turrets)),
+        target(o.target), docked(o.docked), timeout(o.timeout) {}
 
     Ship(ShipType type, const unsigned int hull,
         string const& code="", string const& name="",
@@ -411,7 +642,7 @@ struct Ship : public HasIDAndSectorAndPosition,
         HasDirection(direction), HasSpeed(speed),
         HasDestination(destination),
         type(type), maxHull(hull), currentHull(hull),
-        faction(ShipFaction_Neutral), weapons(), turrets(), target(nullptr), docked(false), timeout(0.f) {}
+        faction(ShipFaction_Neutral), _weapons(), _turrets(), target(nullptr), docked(false), timeout(0.f) {}
 
     Ship(ID const& id, ShipType type, ShipFaction faction, const unsigned int maxHull, const unsigned int currentHull,
         string const& code, string const& name,
@@ -425,10 +656,20 @@ struct Ship : public HasIDAndSectorAndPosition,
         HasDirection(direction), HasSpeed(speed),
         HasDestination(destination),
         type(type), maxHull(maxHull), currentHull(currentHull),
-        faction(faction), weapons(), turrets(), target(target), docked(docked), timeout(timeout) {}
+        faction(faction), _weapons(), _turrets(), target(target), docked(docked), timeout(timeout) {}
 
-    Ship& operator =(Ship const& o) {
+    void setWeapons(vector_weapon_ptr&& weapons) {
+        for (auto& weapon : weapons) weapon->isTurret = false;
+        _weapons = weapons;
+    }
+    void setTurrets(vector_weapon_ptr&& turrets) {
+        for (auto& turret : turrets) turret->isTurret = true;
+        _turrets = turrets;
+    }
+
+    Ship& operator =(Ship&& o) {
         id = o.id;
+        idType = o.idType;
         code = o.code;
         name = o.name;
         sector = o.sector;
@@ -442,17 +683,14 @@ struct Ship : public HasIDAndSectorAndPosition,
         currentHull = o.currentHull;
         faction = o.faction;
 
-        weapons.clear();
-        weapons.reserve(o.weapons.size());
-        for (auto weapon : o.weapons) {
-            weapons.emplace(weapons.end(), weapon_ptr(new Weapon(weapon->type, false, weapon->weaponPosition, *this)));
-        }
-
-        turrets.clear();
-        turrets.reserve(o.turrets.size());
-        for (auto turret : o.turrets) {
-            turrets.emplace(turrets.end(), weapon_ptr(new Weapon(turret->type, true, turret->weaponPosition, *this)));
-        }
+        vector_weapon_ptr weapons;
+        vector_weapon_ptr turrets;
+        weapons.reserve(o._weapons->size());
+        turrets.reserve(o._turrets->size());
+        for (auto& weapon : o._weapons()) weapons.push_back(weapon);
+        for (auto& turret : o._turrets()) turrets.push_back(turret);
+        setWeapons(std::move(weapons));
+        setTurrets(std::move(turrets));
 
         target = o.target;
         docked = o.docked;
@@ -461,11 +699,11 @@ struct Ship : public HasIDAndSectorAndPosition,
         return *this;
     }
 
-    vector<Weapon*> weaponsAndTurrets() {
-        vector<Weapon*> r;
-        r.reserve(weapons.size() + turrets.size());
-        for (auto weapon : weapons) r.push_back(&*weapon);
-        for (auto turret : turrets) r.push_back(&*turret);
+    vector_weapon_ptr weaponsAndTurrets() {
+        vector_weapon_ptr r;
+        r.reserve(weapons->size() + turrets->size());
+        for (auto& weapon : _weapons()) r.push_back(weapon);
+        for (auto& turret : _turrets()) r.push_back(turret);
         return r;
     }
 
@@ -502,8 +740,8 @@ inline float randFloat(float max=1.0f) {
 inline position_t randPosition(position_t min, position_t max) {
     return {randFloat(min.x, max.x), randFloat(min.y, max.y)};
 }
-inline position_t randPosition(position_pair_t minMax) {
-    return randPosition(minMax.first, minMax.second);
+inline position_t randPosition(Vector2<position_t> minMax) {
+    return randPosition(minMax.x, minMax.y);
 }
 inline position_t randPosition(dimensions_t dimensions, float wallBuffer=0.0f) {
     return randPosition({0.0f+wallBuffer, 0.0f+wallBuffer}, {dimensions.x-wallBuffer, dimensions.y-wallBuffer});
@@ -578,7 +816,8 @@ destination_ptr randDestination(Sector& sector, bool useJumpgates, float miscCha
 
         if (!potentialDestinations.empty()) {
             auto destinationObject = potentialDestinations[rand() % potentialDestinations.size()];
-            return destination_ptr(new Destination(*destinationObject));
+            auto r = destination_ptr(new Destination(*destinationObject));
+            return r;
         }
     }
     return destination_ptr(new Destination(sector, randPosition({0,0}, sector.size)));
@@ -586,7 +825,7 @@ destination_ptr randDestination(Sector& sector, bool useJumpgates, float miscCha
 
 
 // ---------------------------------------------------------------------------
-// PROGRAM
+// BOUNDARY / RANGE DEFINITIONS
 // ---------------------------------------------------------------------------
 
 
@@ -605,7 +844,7 @@ const size_t       TICK_TIME               = 300;  // milliseconds
 const float        DOCK_TIME               = 3.f;  // seconds
 const float        RESPAWN_TIME            = 10.f; // seconds
 
-const position_pair_t
+const Vector2<position_t>
     GATE_RANGE_NORTH {{SECTOR_SIZE.x/3.f + 0.1f, 0.25f},               {2*SECTOR_SIZE.x/3.f - 0.1f, SECTOR_SIZE.y/5.f}},
     GATE_RANGE_EAST  {{4*SECTOR_SIZE.x/5.f, SECTOR_SIZE.y/3.f + 0.1f}, {SECTOR_SIZE.x - 0.25f, 2*SECTOR_SIZE.y/3.f - 0.1f}},
     GATE_RANGE_SOUTH {{SECTOR_SIZE.x/3.f + 0.1f, 4*SECTOR_SIZE.y/5.f}, {2*SECTOR_SIZE.x/3.f - 0.1f, SECTOR_SIZE.y - 0.25f}},
@@ -864,7 +1103,7 @@ string shipString(Ship const& ship, bool useColor=false, unsigned int color=0) {
     useColor = useColor && color != 0;
     ostringstream os;
     if (useColor) os << beginColorString(color);
-    if (ship.code.size()) os << /*" code:"*/ " " << ship.code;
+    if (ship.code->size()) os << /*" code:"*/ " " << ship.code;
     float hull = ship.currentHull / static_cast<float>(ship.maxHull);
     if (useColor) {
         os << " "
@@ -892,7 +1131,7 @@ string shipString(Ship const& ship, bool useColor=false, unsigned int color=0) {
        << (dir.x <= -0.3 ? "W" : dir.x >= 0.3 ? "E" : " ");
     os << /*" class:"*/ " " << paddedShipClass(ship.type);
     if (ship.target && ship.sector == ship.target->sector) {
-        if (auto target = dynamic_cast<Ship*>(ship.target)) {
+        if (auto target = dynamic_cast<Ship*>(ship.target())) {
             os << " -> "
                << beginColorString(target->faction == ShipFaction_Player ? PLAYER_COLOR
                                   :target->faction == ShipFaction_Friend ? FRIEND_COLOR
@@ -928,7 +1167,7 @@ string shipString(Ship const& ship, bool useColor=false, unsigned int color=0) {
 
 vector<string> createSectorShipsList(Sector& sector, Ship* playerShip, bool const useColor) {
     vector<string> shipsList;
-    for (auto ship : sector.ships) {
+    for (auto ship : sector.ships()) {
         if (ship->docked) continue;
         ostringstream os;
         bool isPlayerShip    = ship == playerShip;
@@ -961,23 +1200,22 @@ vector<string> createSectorShipsList(Sector& sector, Ship* playerShip, bool cons
 
 vector<string> createSectorMap(Sector& sector, Ship* playerShip, bool useColor) {
     static string leftPadding(SECTOR_MAP_LEFT_PADDING, ' ');
-    auto& sectorSize = sector.size;
-    vector<string> sectorMap; sectorMap.reserve(static_cast<size_t>(sectorSize.x+3));
+    vector<string> sectorMap; sectorMap.reserve(static_cast<size_t>(sector.size.x+3));
     { // header
         ostringstream os;
-        os << leftPadding << '+' << string((sectorSize.x+1) * 3, '-') << '+';
+        os << leftPadding << '+' << string((sector.size.x+1) * 3, '-') << '+';
         sectorMap.push_back(os.str());
     }
-    for (size_t i=0; i<=sectorSize.y; ++i) {
+    for (size_t i=0; i<=sector.size.y; ++i) {
         ostringstream os;
-        os << leftPadding << '|' << string((sectorSize.x+1) * 3, ' ') << '|';
+        os << leftPadding << '|' << string((sector.size.x+1) * 3, ' ') << '|';
         sectorMap.push_back(os.str());
     }
     { // footer
         ostringstream os;
         os << leftPadding << "+-[ "
            << colorString(PLAYER_COLOR, sector.name, useColor)
-           << " ]" << string(((sectorSize.x+1) * 3) - sector.name.size() - 5, '-')
+           << " ]" << string(((sector.size.x+1) * 3) - sector.name->size() - 5, '-')
            << '+';
         sectorMap.push_back(os.str());
     }
@@ -996,8 +1234,15 @@ vector<string> createSectorMap(Sector& sector, Ship* playerShip, bool useColor) 
         }
     };
 
+    // Display saving message
+    if (isSaving) {
+        string saveString("[ SAVE IN PROGRESS... BUT GAME'S STILL RUNNING! ]");
+        size_t col = sectorMap[0].size()/2 - saveString.size()/2 + 3;
+        addReplacementString({0, col}, 0, saveString);
+    }
+
     // ships
-    for (auto ship : sector.ships) {
+    for (auto ship : sector.ships()) {
         bool isPlayerShip    = ship == playerShip;
         bool isPlayerFaction = ship->faction == ShipFaction_Player;
         bool isFriend        = ship->faction == ShipFaction_Friend;
@@ -1020,10 +1265,10 @@ vector<string> createSectorMap(Sector& sector, Ship* playerShip, bool useColor) 
             string shipStr = ".";
             if (isPlayerShip) {
                 auto& dir = ship->direction;
-                auto dirMax = std::max(dir.y, 0.0f);
+                auto dirMax = std::max(dir.y(), 0.0f);
                 shipStr = "v";
                 if (dir.x > 0 && dir.x > dirMax) { dirMax = dir.x; shipStr = ">"; }
-                if (dir.y < 0 && std::abs(dir.y) > dirMax) { dirMax = std::abs(ship->direction.y); shipStr = "^"; }
+                if (dir.y < 0 && std::abs(dir.y) > dirMax) { dirMax = std::abs(dir.y); shipStr = "^"; }
                 if (dir.x < 0 && std::abs(dir.x) > dirMax) { shipStr = "<"; }
             }
             unsigned int color = 0;
@@ -1128,9 +1373,9 @@ vector<string> createGlobalMap(vector<vector<Sector>> const& sectors, Ship* play
             Sector const& sector = sectors[i][j];
             bool isPlayerSector = playerShip && &sector == playerShip->sector;
             if (isPlayerSector) playerSectorIndex = {i, j};
-            size_t shipCount = sector.ships.size();
+            size_t shipCount = sector.ships->size();
             bool hasPlayerProperty = false;
-            for (auto ship : sector.ships) {
+            for (auto ship : sector.ships()) {
                 if (ship->currentHull <= 0.f) --shipCount;
                 if (ship->faction == ShipFaction_Player && ship != playerShip) {
                     hasPlayerProperty = true;
@@ -1404,8 +1649,9 @@ vector<Station> initStations(vector<vector<Sector>>& sectors) {
 
 vector<Ship> initShips(size_t const& shipCount, vector<vector<Sector>>& sectors, bool useJumpgates, float const& wallBuffer=0.1f) {
     vector<Ship> ships;
-    ships.reserve(shipCount);
+    map<Sector*, set_ship_ptr> sectorShipRefs;
 
+    ships.reserve(shipCount);
     for (size_t i=0; i<shipCount; ++i) {
         bool isPlayerShip = i == 0;
         auto& sector = sectors[rand() % sectors.size()][rand() % sectors[0].size()];
@@ -1422,8 +1668,10 @@ vector<Ship> initShips(size_t const& shipCount, vector<vector<Sector>>& sectors,
         auto it      = ships.emplace(ships.end(), type, hull, code, name, &sector, pos, dir, speed, dest);
         auto& ship   = *it;
         // weapons/turrets
-        ship.weapons.reserve(weapons.size());
-        ship.turrets.reserve(turrets.size());
+        vector_weapon_ptr newWeapons;
+        vector_weapon_ptr newTurrets;
+        newWeapons.reserve(weapons.size());
+        newTurrets.reserve(turrets.size());
         bool isSideFire = isShipSideFire(type);
         for (size_t i = 0; i < (isSideFire ? 2 : 1); ++i) {
             for (WeaponType weapon : weapons) {
@@ -1431,12 +1679,14 @@ vector<Ship> initShips(size_t const& shipCount, vector<vector<Sector>>& sectors,
                                               ? i ? WeaponPosition_Port
                                                   : WeaponPosition_Starboard
                                               : WeaponPosition_Bow;
-                ship.weapons.emplace(ship.weapons.end(), weapon_ptr(new Weapon(weapon, false, weaponPosition, ship)));
+                newWeapons.emplace(newWeapons.end(), weapon_ptr(new Weapon(weapon, false, weaponPosition, ship)));
             }
         }
         for (WeaponType turret : turrets) {
-            ship.turrets.emplace(ship.turrets.end(), weapon_ptr(new Weapon(turret, true, WeaponPosition_Bow, ship)));
+            newTurrets.emplace(newTurrets.end(), weapon_ptr(new Weapon(turret, true, WeaponPosition_Bow, ship)));
         }
+        ship.setWeapons(std::move(newWeapons));
+        ship.setTurrets(std::move(newTurrets));
         // friend/foe
         if (isPlayerShip) {
             ship.faction = ShipFaction_Player;
@@ -1451,7 +1701,15 @@ vector<Ship> initShips(size_t const& shipCount, vector<vector<Sector>>& sectors,
             }
         }
         // add ship to sector
-        sector.ships.insert(&ship);
+        if (!sectorShipRefs.count(&sector)) {
+            sectorShipRefs[&sector] = set_ship_ptr();
+        }
+        sectorShipRefs[&sector].insert(&ship);
+    }
+
+    // Store sector ships
+    for (auto& sectorShipRef : sectorShipRefs) {
+        sectorShipRef.first->setShips(std::move(sectorShipRef.second));
     }
 
     return ships;
@@ -1465,6 +1723,8 @@ vector<Ship> initShips(size_t const& shipCount, vector<vector<Sector>>& sectors,
 
 // delta = seconds
 void moveShips(double delta, vector<Ship>& ships, Ship* playerShip, bool useJumpgates) {
+    map<Sector*, set_ship_ptr> sectorShipRefs;
+    
     for (auto& ship : ships) {
         if (ship.timeout) {
             ship.timeout = std::max(0.0, ship.timeout - delta);
@@ -1474,12 +1734,12 @@ void moveShips(double delta, vector<Ship>& ships, Ship* playerShip, bool useJump
         }
         if (ship.docked || ship.currentHull <= 0 || ship.timeout) continue;
 
-        bool  isPlayerShip = &ship == playerShip;
-        auto  sector       = ship.sector;
-        auto& pos          = ship.position;
-        auto& dir          = ship.direction;
-        auto& speed        = ship.speed;
-        auto& dest         = ship.destination;
+        bool    isPlayerShip = &ship == playerShip;
+        Sector* sector       = ship.sector;
+        auto&   pos          = ship.position;
+        auto&   dir          = ship.direction;
+        auto&   speed        = ship.speed;
+        auto&   dest         = ship.destination;
 
         if (dest && dest->sector == sector) {
             auto destPos  = dest->currentPosition();
@@ -1507,7 +1767,6 @@ void moveShips(double delta, vector<Ship>& ships, Ship* playerShip, bool useJump
                     ship.docked = true;
                     ship.timeout = DOCK_TIME; // dock timer
                 }
-
 
                 float miscChance = isPlayerShip && sector->jumpgates.count() > 1 ? 0.f : MISC_DESTINATION_CHANCE;
                 if (dest->object) {
@@ -1565,13 +1824,15 @@ void moveShips(double delta, vector<Ship>& ships, Ship* playerShip, bool useJump
         // Handle sector changes
         if (sector != ship.sector) {
             // remove from old sector
-            set<Ship*> sectorShips(ship.sector->ships);
-            sectorShips.erase(&ship);
-            ship.sector->ships = sectorShips;
+            if (!sectorShipRefs.count(ship.sector)) {
+                sectorShipRefs[ship.sector] = set_ship_ptr(ship.sector->ships);
+            }
+            sectorShipRefs[ship.sector].erase(&ship);
             // add to new sector
-            sectorShips = sector->ships;
-            sectorShips.insert(&ship);
-            sector->ships = sectorShips;
+            if (!sectorShipRefs.count(sector)) {
+                sectorShipRefs[sector] = set_ship_ptr(sector->ships);
+            }
+            sectorShipRefs[sector].insert(&ship);
             // update ship
             ship.sector = sector;
         }
@@ -1582,15 +1843,20 @@ void moveShips(double delta, vector<Ship>& ships, Ship* playerShip, bool useJump
         if      (pos.y < 0)              pos.y = 0;
         else if (pos.y > sector->size.y) pos.y = sector->size.y;
     }
+    
+    // Update sector ships
+    for (auto& sectorShipRef : sectorShipRefs) {
+        sectorShipRef.first->setShips(std::move(sectorShipRef.second));
+    }
 }
 
 
 void acquireTargets(Sector& sector) {
     map<Ship*, vector<Ship*>> potentialTargets;
     vector<Ship*> sectorShips;
-    sectorShips.reserve(sector.ships.size());
+    sectorShips.reserve(sector.ships->size());
 
-    for (Ship* ship : sector.ships) {
+    for (Ship* ship : sector.ships()) {
         // Clear dead ships' targets
         if (ship->currentHull <= 0.f) {
             if (ship->target)
@@ -1607,7 +1873,7 @@ void acquireTargets(Sector& sector) {
 
     // Map targets potentially in range
     for (Ship* ship : sectorShips) {
-        if (!ship->weapons.empty() || !ship->turrets.empty()) {
+        if (!ship->weapons->empty() || !ship->turrets->empty()) {
             for (Ship* otherShip : sectorShips) {
                 // Exclude friendly ships, docked ships, dead ships, and ones definitely out of range
                 if (ship == otherShip
@@ -1629,8 +1895,8 @@ void acquireTargets(Sector& sector) {
         // Untarget all if no potential targets are in range
         if (!potentialTargets.count(ship)) {
             if (ship->target) ship->target = nullptr;
-            for (auto weapon : ship->weapons) if (weapon->target) weapon->target = nullptr;
-            for (auto turret : ship->turrets) if (turret->target) turret->target = nullptr;
+            for (auto& weapon : ship->weapons()) if (weapon->target) weapon->target = nullptr;
+            for (auto& turret : ship->turrets()) if (turret->target) turret->target = nullptr;
         }
     }
 
@@ -1651,10 +1917,10 @@ void acquireTargets(Sector& sector) {
             }
 
             // main weapons
-            for (size_t i=0; i < ship->weapons.size(); ++i) {
-                Weapon& weapon = *(ship->weapons[i]);
+            for (size_t i=0; i < ship->weapons->size(); ++i) {
+                Weapon& weapon = *(ship->weapons()[i]);
                 WeaponPosition weaponPosition = isShipSideFire(ship->type)
-                                              ? (i < ship->weapons.size()/2)
+                                              ? (i < ship->weapons->size()/2)
                                                   ? WeaponPosition_Port
                                                   : WeaponPosition_Starboard
                                               : WeaponPosition_Bow;
@@ -1670,8 +1936,8 @@ void acquireTargets(Sector& sector) {
                 }
             }
             // turrets
-            for (size_t i=0; i < ship->turrets.size(); ++i) {
-                Weapon& turret = *(ship->turrets[i]);
+            for (size_t i=0; i < ship->turrets->size(); ++i) {
+                Weapon& turret = *(ship->turrets()[i]);
                 float toHit = chanceToHit(turret, true, WeaponPosition_Bow, target);
                 if (toHit > 0.f) {
                     if (!weaponToHit.count(&turret)) {
@@ -1715,13 +1981,13 @@ void acquireTargets(Sector& sector) {
         {
             Ship* bestTarget;
             Weapon* p;
-            for (auto weapon : ship->weapons) {
+            for (auto& weapon : ship->weapons()) {
                 p = &*weapon;
                 bestTarget = nullptr;
                 if (weaponToHit.count(p)) bestTarget = weaponToHit[p].first;
                 if (p->target != bestTarget) p->target = bestTarget;
             }
-            for (auto turret : ship->turrets) {
+            for (auto& turret : ship->turrets()) {
                 p = &*turret;
                 bestTarget = nullptr;
                 if (weaponToHit.count(p)) bestTarget = weaponToHit[p].first;
@@ -1750,7 +2016,7 @@ void fireWeapons(double delta, vector<Ship>& ships) {
         float minNextCooldown = 0.f;
         bool minNextCooldownSet = false;
         do {
-            vector<Weapon*> weaponsAndTurrets;
+            vector_weapon_ptr weaponsAndTurrets;
             for (auto& ship : ships) {
                 weaponsAndTurrets = ship.weaponsAndTurrets();
                 for (auto weaponsIt = weaponsAndTurrets.begin(); weaponsIt != weaponsAndTurrets.end(); ++weaponsIt) {
@@ -1793,7 +2059,7 @@ void fireWeapons(double delta, vector<Ship>& ships) {
                     currentCooldown = shot.second;
                     continue;
                 }
-                if (auto target = dynamic_cast<Ship*>(weapon->target)) {
+                if (auto target = dynamic_cast<Ship*>(weapon->target())) {
                     canFire = !target->docked && target->currentHull >= 0;
                     if (canFire) {
                         if (Ship* ship = dynamic_cast<Ship*>(weapon->parent)) {
@@ -1811,7 +2077,7 @@ void fireWeapons(double delta, vector<Ship>& ships) {
                                 if (tryFire <= toHit) {
                                     auto damage = weaponDamage(weapon->type, weapon->isTurret);
                                     if (isWeaponDamageOverTime(weapon->type)) damage *= cooldown - appliedDelta;  // adjust beam weapon damage
-                                    if (auto target = dynamic_cast<Ship*>(weapon->target)) {
+                                    if (auto target = dynamic_cast<Ship*>(weapon->target())) {
                                         target->currentHull = std::max(0.f, target->currentHull - damage);
                                         if (target->currentHull <= 0) target->timeout = RESPAWN_TIME; // respawn timer
                                     }
@@ -1827,14 +2093,17 @@ void fireWeapons(double delta, vector<Ship>& ships) {
 
     // Update live weapon cooldowns
     for (auto& ship : ships) {
-        for (auto weapon : ship.weapons) if (weapon->cooldown > 0.f) weapon->cooldown -= delta;
-        for (auto turret : ship.turrets) if (turret->cooldown > 0.f) turret->cooldown -= delta;
+        for (auto& weapon : ship.weapons()) if (weapon->cooldown > 0.f) weapon->cooldown -= delta;
+        for (auto& turret : ship.turrets()) if (turret->cooldown > 0.f) turret->cooldown -= delta;
     }
 }
 
 
 void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& stations, bool useJumpgates) {
     if (stations.empty()) return; // return if there are no valid respawn points
+
+    map<Sector*, set_ship_ptr> sectorShipRefs;
+    
     for (auto& ship : ships) {
         bool isPlayerShip = &ship == playerShip;
         if (ship.currentHull <= 0 && ship.timeout <= 0.f) {
@@ -1844,9 +2113,10 @@ void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& statio
             }
 
             // remove dead ship from the sector
-            set<Ship*> sectorShips(ship.sector->ships);
-            sectorShips.erase(&ship);
-            ship.sector->ships = sectorShips;
+            if (!sectorShipRefs.count(ship.sector)) {
+                sectorShipRefs[ship.sector] = set_ship_ptr(ship.sector->ships);
+            }
+            sectorShipRefs[ship.sector].erase(&ship);
 
             // select a random station for respawn
             Station& station = stations[rand() % stations.size()];
@@ -1874,8 +2144,10 @@ void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& statio
             ship.timeout = 0.f;
 
             // weapons/turrets
-            ship.weapons.reserve(weapons.size());
-            ship.turrets.reserve(turrets.size());
+            vector_weapon_ptr newWeapons;
+            vector_weapon_ptr newTurrets;
+            newWeapons.reserve(weapons.size());
+            newTurrets.reserve(turrets.size());
             bool isSideFire = isShipSideFire(type);
             for (size_t i = 0; i < (isSideFire ? 2 : 1); ++i) {
                 for (WeaponType weapon : weapons) {
@@ -1883,12 +2155,14 @@ void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& statio
                                                 ? i ? WeaponPosition_Port
                                                     : WeaponPosition_Starboard
                                                 : WeaponPosition_Bow;
-                    ship.weapons.emplace(ship.weapons.end(), weapon_ptr(new Weapon(weapon, false, weaponPosition, ship)));
+                    newWeapons.emplace(newWeapons.end(), weapon_ptr(new Weapon(weapon, false, weaponPosition, ship)));
                 }
             }
             for (WeaponType turret : turrets) {
-                ship.turrets.emplace(ship.turrets.end(), weapon_ptr(new Weapon(turret, true, WeaponPosition_Bow, ship)));
+                newTurrets.emplace(newTurrets.end(), weapon_ptr(new Weapon(turret, true, WeaponPosition_Bow, ship)));
             }
+            ship.setWeapons(std::move(newWeapons));
+            ship.setTurrets(std::move(newTurrets));
 
             // friend/foe
             if (isPlayerShip) {
@@ -1907,11 +2181,17 @@ void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& statio
                 }
             }
 
-            // add to sector
-            sectorShips = sector.ships;
-            sectorShips.insert(&ship);
-            sector.ships = sectorShips;
+            // add to respawn sector
+            if (!sectorShipRefs.count(&sector)) {
+                sectorShipRefs[&sector] = set_ship_ptr(sector.ships);
+            }
+            sectorShipRefs[&sector].insert(&ship);
         }
+    }
+    
+    // Update sector ships
+    for (auto& sectorShipRef : sectorShipRefs) {
+        sectorShipRef.first->setShips(std::move(sectorShipRef.second));
     }
 }
 
@@ -2004,9 +2284,9 @@ string Sector::xml_serialize(string const& indent) {
         for (auto station : stations) os << station->xml_serialize(subindent2) << endl;
         os << subindent << xml_close("stations") << endl;
     }
-    if (!ships.empty()) {
-        os << subindent << xml_open("ships", {{"count", xml_serializableNumber(ships.size())}}) << endl;
-        for (auto ship : ships) os << ship->xml_serialize(subindent2) << endl;
+    if (!ships->empty()) {
+        os << subindent << xml_open("ships", {{"count", xml_serializableNumber(ships->size())}}) << endl;
+        for (auto ship : ships()) os << ship->xml_serialize(subindent2) << endl;
         os << subindent << xml_close("ships") << endl;
     }
     os << indent << xml_close(xml_tagname());
@@ -2081,14 +2361,14 @@ string Ship::xml_serialize(string const& indent) {
     if (docked)        attrs.emplace_back("docked",  xml_serializableBool(docked));
     if (timeout > 0.0) attrs.emplace_back("timeout", xml_serializableNumber(timeout));
     os << indent << xml_open(xml_tagname(), attrs) << endl;
-    if (!weapons.empty()) {
-        os << subindent << xml_open("weapons", {{"count", xml_serializableNumber(weapons.size())}}) << endl;
-        for (auto weapon : weapons) os << weapon->xml_serialize(subindent2) << endl;
+    if (!weapons->empty()) {
+        os << subindent << xml_open("weapons", {{"count", xml_serializableNumber(weapons->size())}}) << endl;
+        for (auto& weapon : weapons()) os << weapon->xml_serialize(subindent2) << endl;
         os << subindent << xml_close("weapons") << endl;
     }
-    if (!turrets.empty()) {
-        os << subindent << xml_open("turrets", {{"count", xml_serializableNumber(turrets.size())}}) << endl;
-        for (auto turret : turrets) os << turret->xml_serialize(subindent2) << endl;
+    if (!turrets->empty()) {
+        os << subindent << xml_open("turrets", {{"count", xml_serializableNumber(turrets->size())}}) << endl;
+        for (auto& turret : turrets()) os << turret->xml_serialize(subindent2) << endl;
         os << subindent << xml_close("turrets") << endl;
     }
     os << indent << xml_close(xml_tagname());
@@ -2151,6 +2431,8 @@ void xml_serialize_savegame(std::ostream& os, vector<vector<Sector>> const& sect
 int main(int argc, char** argv) {
     std::srand(time(nullptr));
 
+    ofstream livefile, snapfile;
+
     bool useColor     = false;
     bool useJumpgates = true;
 
@@ -2166,10 +2448,36 @@ int main(int argc, char** argv) {
 
     auto& playerShip = ships[0];
 
+    auto performSave = [&](ostream& os) {
+        duration<double> d_save;
+        time_point<steady_clock> t;
+        
+        t = steady_clock::now();
+        xml_serialize_savegame(os, sectors, jumpgates, stations, ships);
+//        update_aftersave(); // commented to allow main thread control for this example
+        d_save = steady_clock::now() - t;
+        os << endl << "save time: " << (d_save.count() * 1000) << "ms" << endl;
+    };
+
+    auto saveThreadFn = [&](ostream& os, int delay=0) {
+//        isSaving = true; // commented to allow main thread control for this example
+        willSave = false;
+
+        // artificially make the save state take longer
+        if (delay) std::this_thread::sleep_for(milliseconds(delay));
+
+        os << "SNAP" << endl << endl;
+        performSave(os);
+
+//        isSaving = false; // commented to allow main thread control for this example
+        saveComplete = true;
+    };
+
     auto mainThreadFn = [&]() {
         duration<double>         d1, d2, delta;
         time_point<steady_clock> t, thisTick, nextTick = steady_clock::now(), lastTick = nextTick;
-        while (true) {
+
+        while (!endGame) {
             std::this_thread::sleep_until(nextTick);
 
             thisTick   = steady_clock::now();
@@ -2187,10 +2495,9 @@ int main(int argc, char** argv) {
             updateDisplay(sectors, playerShip, useColor);
             d2 = steady_clock::now() - t;
             
-            cout << "delta: " << (delta.count() * 1000) << "ms" << "  "
-                 << "work: " << (d1.count() * 1000) << "ms" << "  "
-                 << "display: " << (d2.count() * 1000) << "ms"
-                 << endl;
+            cout << "delta: "   << (delta.count() * 1000) << "ms" << "  "
+                 << "work: "    << (d1.count() * 1000)    << "ms" << "  "
+                 << "display: " << (d2.count() * 1000)    << "ms" << endl;
 
             lastTick = thisTick;
 
@@ -2200,13 +2507,46 @@ int main(int argc, char** argv) {
 
             static size_t count = 0;
             count++;
-            if (count == 30) {
-                duration<double> d_save;
-                t = steady_clock::now();
-                xml_serialize_savegame(cerr, sectors, jumpgates, stations, ships);
-                d_save = steady_clock::now() - t;
-                cerr << endl << "save time: " << (d_save.count() * 1000) << "ms" << endl;
-                return;
+            // save on background thread around 10 and 20 seconds (at ~3 frames per second)
+            if (count == 30 || count == 60) {
+
+                // write out live state for comparison
+                livefile.open(count == 30 ? "tiny-space_01-live.txt" : "tiny-space_03-live.txt");
+                livefile << "LIVE" << endl << endl;
+                performSave(livefile);
+                livefile.close();
+
+                willSave = true;
+
+                // under main thread control for this example.
+                // first snapshot should match live (as printed above).
+                // isSaving stays true between the two save runs.
+                // their outputs should be exactly the same!
+                isSaving = true; 
+
+                snapfile.open(count == 30 ? "tiny-space_02-snap.txt" : "tiny-space_04-snap.txt");
+                saveThread.store(new thread(saveThreadFn, std::ref(snapfile), 5000));
+            }
+
+            // join save thread when complete
+            if (saveComplete) {
+                if (count > 60) { // hold save state open for about 10 seconds between background saves
+                    isSaving = false; // under main thread control for this example
+                    update_aftersave(); // under main thread control for this example
+                }
+
+                saveComplete = false;
+
+                if (saveThread.load()) {
+                    saveThread.load()->join();
+                    saveThread = nullptr;
+                    snapfile.close();
+                }
+            }
+
+            // exit around 30 seconds (at ~3 frames per second)
+            if (count >= 90 && !willSave && !isSaving && !saveComplete) {
+                endGame = true;
             }
         }
     };
