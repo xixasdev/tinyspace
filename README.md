@@ -13,16 +13,19 @@ Separate gists will be created for versions and/or feature tests.
 - `--color` - Enable color display (for terminals that support ANSI color codes)
 - `--no-jumpgates` - Disable jumpgate travel and revert to the original fly-between-sectors style.
 
+**Note:**
+The `--no-jumpgates` option is currently broken, as ships will now always seek a destination.
+Without jumpgates, that destination will always be a station or random location.
+As such, they will never leave their sector.
+This was an oversight and should be fixed in v4.
+
 ## What's New
 
-**New in this version (v2):**
-- Added a full color interface
-- Friend/foe designations ( `+` / `-` ) and coloring
-- Jumpgate travel between sectors
-
-**New Options:**
-- `--color` - Enable color display (for terminals that support ANSI color codes)
-- `--no-jumpgates` - Disable jumpgate travel and revert to the original fly-between-sectors style.
+**New in this version (v3):**
+- Randomized jumpgate positions
+- Added factions and player-owned ships
+- Added stations, docking, and repair
+- Added simple combat, a killscreen with timer, and automatic respawn in a new ship/location
 
 ## Sample Simulation
 
@@ -30,52 +33,50 @@ Separate gists will be created for versions and/or feature tests.
 
 ## ...or plain Black and White
 ```
- >( name:F001 code:PTS-016 loc:{-6.4, 1.9} dir:{ 0.5,-0.9} class:Frigate   )
-  ( name:T010 code:PXO-248 loc:{-0.4,-4.1} dir:{ 0.1,-1.0} class:Transport )
-  ( name:F017 code:VIH-960 loc:{-1.8,-8.9} dir:{ 0.9,-0.4} class:Frigate   )
-  ( name:F025 code:SWU-004 loc:{-7.8,-5.2} dir:{ 0.5, 0.9} class:Frigate   )
-  ( name:S023 code:GIF-381 loc:{-2.1, 0.4} dir:{ 0.2, 1.0} class:Scout     )
- -( name:C031 code:UCB-086 loc:{-5.4, 8.9} dir:{ 0.9,-0.5} class:Corvette  )
-  ( name:C088 code:VGQ-182 loc:{-0.8,-8.0} dir:{ 0.8, 0.6} class:Corvette  )
-  ( name:C113 code:AWF-748 loc:{ 0.2,-5.5} dir:{ 0.9, 0.5} class:Corvette  )
-  ( name:S100 code:JMK-282 loc:{ 8.7,-2.8} dir:{ 0.4, 0.9} class:Scout     )
+ > AAD-198 ||||| [-4,-2]  W Corvette  -> Corvette  QVL-139 |
+   HPR-860 ||||| [-6, 1] SW Transport
+   PSH-086 ||||| [ 0, 0] NW Frigate  
+ + XKQ-219 ||||| [-5, 1] SW Frigate  
+   LNV-650 ||||| [ 6,-3] NW Scout    
+ - SOC-853 ||||| [ 2, 1] NW Corvette 
+ - QVL-139 |     [-1, 0] N  Corvette  -> Corvette  AAD-198 |||||
 
       +---------------------------------------------------------------+
-      |                               0                               |
-      |                .                                              |
+      |                                                               |
+      |                                                               |
+      |                      0                                        |
       |                                                               |
       |                                                               |
       |                                                               |
       |                                                               |
       |                                                               |
       |                                                               |
-      |             v                                                 |
+      |             .  .                    .                         |
+      |                            .  .                               |
       |                                                               |
-      |                         .                                   0 |
+      |             0     <                    ()                     |
+      |                                                 .  0          |
+      |                                           ()                  |
       |                                                               |
       |                                                               |
-      |                                                          .    |
-      |                               .                               |
-      |       .                                                       |
-      |                               .                               |
       |                                                               |
-      |                            .                                  |
-      |                         .                                     |
-      |                               0                               |
-      +-[ A07 ]-------------------------------------------------------+
+      |                                                               |
+      |                                  0                            |
+      |                                                               |
+      +-[ F02 ]-------------------------------------------------------+
 
         A      B      C      D      E      F      G      H      I      J  
    .----------------------------------------------------------------------
-01 |    6      5      5      3      4      4      9      5      4      6  
-02 |   12     10      5      9      3      8      9      3      4      7  
-03 |    5      3      6     10      5      5      7      4      4      9  
-04 |    6      6      4      9      2      3      8      4      4      1  
-05 |    6      7      1      5      2      2      5      3      6      5  
-06 |    8      3      2      2      7             3      4      4      8  
-07 |[   9 ]    2      4      4      1      7      6      3      4      3  
-08 |    5      6      3      8      3      2      4      2      3      3  
-09 |    7      5      5      5      7      4      3      4      7      7  
-10 |    6      6      8      4      4      5     10      3      3      6  
+01 |    6      2      1      4      7      3      3      4      3      4  
+02 |    5.     5      9      6      4  [   8 ]    1      6             3  
+03 |    6      4      7      4      5      7      5      4      6      2  
+04 |    8.     6      3      3      3      3      5      5      8     10  
+05 |    1      7     10      9      6      5      3      4      6      4  
+06 |    3      1     11      6      7      7      5      5      2     10  
+07 |    4      1      7      2      5      3      4      6.     4      9. 
+08 |    4             4     10      1     10      4.     8      8      8  
+09 |   13      2             4      2      6      5      6      3      4  
+10 |    7      6      5      7     10             4      5      4      3  
 
-delta: 300.069ms  work: 0.037854ms  display: 0.280972ms
+delta: 300.093ms  work: 0.420654ms  display: 0.757988ms
 ```
