@@ -21,11 +21,10 @@ This was an oversight and should be fixed in v4.
 
 ## What's New
 
-**New in this version (v3):**
-- Randomized jumpgate positions
-- Added factions and player-owned ships
-- Added stations, docking, and repair
-- Added simple combat, a killscreen with timer, and automatic respawn in a new ship/location
+**New in this version (v3 - basic serialization):**
+- Added basic XML serialization
+
+Runs for 10 seconds, serializes game data to `stderr`, and exits.
 
 ## Sample Simulation
 

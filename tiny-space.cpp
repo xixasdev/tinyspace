@@ -1,5 +1,5 @@
-// tiny-space.cpp (v2) (C++11)
-// AUTHOR: xixas | DATE: 2022.01.30 | LICENSE: WTFPL/PDM/CC0... your choice
+// tiny-space.cpp (v3 - experiment: basic serialization) (C++11)
+// AUTHOR: xixas | DATE: 2022.02.01 | LICENSE: WTFPL/PDM/CC0... your choice
 //
 // DESCRIPTION: Gaming: Space sim in a tiny package.
 //                      Work In Progress.
@@ -13,6 +13,8 @@
 //                                      | Added factions and player-owner ships
 //                                      | Added stations, docking, repair
 //                                      | Added combat, killscreen, respawn
+// EXPERIMENTS:
+//           2022.02.01 | AUTHOR: xixas | Added basic XML serialization
 
 
 #include <algorithm>
@@ -41,6 +43,7 @@ using std::chrono::duration;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using std::chrono::time_point;
+using std::cerr;
 using std::cout;
 using std::endl;
 using std::map;
@@ -122,6 +125,14 @@ template <typename T, typename U> inline Vector2<T,U> operator -(Vector2<T,U> co
 template <typename T, typename U> inline std::ostream& operator <<(std::ostream& os, const Vector2<T,U>& o) { os << '{' << o.x << ',' << o.y << '}'; return os; }
 
 
+struct XmlSerializable {
+    virtual ~XmlSerializable() {}
+
+    virtual string xml_tagname() = 0;// { return "NOT_IMPLEMENTED"; }
+    virtual string xml_serialize(string const& indent="") = 0;// { return "<!-- serialize() method not implemented! -->"; }
+};
+
+
 enum IDType { IDType_NONE, IDType_Sector, IDType_Jumpgate, IDType_Station, IDType_Ship, IDType_Weapon, IDType_END };
 struct HasID {
     ID id;
@@ -197,6 +208,18 @@ struct HasSectorAndPosition : public HasSector, public HasPosition {
 };
 
 
+struct HasIDAndSectorAndPosition : public HasID, public HasSectorAndPosition {
+
+    HasIDAndSectorAndPosition(IDType const& idType, Sector* const sector, position_t const& position)
+        : HasID(idType), HasSectorAndPosition(sector, position) {}
+
+    HasIDAndSectorAndPosition(ID const& id, IDType const& idType, Sector* const sector, position_t const& position)
+        : HasID(id, idType), HasSectorAndPosition(sector, position) {}
+
+    virtual ~HasIDAndSectorAndPosition() {}
+};
+
+
 struct Destination;
 typedef shared_ptr<Destination> destination_ptr;
 struct HasDestination {
@@ -238,12 +261,12 @@ struct SectorJumpgates {
 
     int count() { return (north ? 1 : 0) + (east  ? 1 : 0) + (south ? 1 : 0) + (west  ? 1 : 0); }
 
-    vector<Jumpgate*> all() const {
+    vector<Jumpgate*> all(bool includeNull=false) const {
         vector<Jumpgate*> jumpgates;
-        if (north) jumpgates.push_back(north);
-        if (east)  jumpgates.push_back(east);
-        if (south) jumpgates.push_back(south);
-        if (west)  jumpgates.push_back(west);
+        if (north || includeNull) jumpgates.push_back(north);
+        if (east  || includeNull) jumpgates.push_back(east);
+        if (south || includeNull) jumpgates.push_back(south);
+        if (west  || includeNull) jumpgates.push_back(west);
         return jumpgates;
     };
 };
@@ -251,44 +274,54 @@ struct SectorJumpgates {
 
 struct Ship;
 struct Station;
-struct Sector: public HasID, public HasName, public HasSize {
+struct Sector: public HasID, public HasName, public HasSize, public XmlSerializable {
+    pair<size_t, size_t> rowcol; // row and column in the universe (sectors)
     SectorNeighbors neighbors;
     SectorJumpgates jumpgates;
     set<Station*>   stations;
     set<Ship*>      ships;
 
-    Sector(string const& name="", dimensions_t const& size={0, 0})
-        : HasID(IDType_Sector), HasName(name), HasSize(size), neighbors(), ships() {}
+    Sector(pair<size_t, size_t> rowcol, string const& name="", dimensions_t const& size={0, 0})
+        : HasID(IDType_Sector), HasName(name), HasSize(size), rowcol(rowcol), neighbors(), ships() {}
 
-    Sector(ID const& id, string const& name="", dimensions_t const& size={0, 0})
-        : HasID(id, IDType_Sector), HasName(name), HasSize(size), neighbors(), ships() {}
+    Sector(ID const& id, pair<size_t, size_t> rowcol, string const& name="", dimensions_t const& size={0, 0})
+        : HasID(id, IDType_Sector), HasName(name), HasSize(size), rowcol(rowcol), neighbors(), ships() {}
+
+    string xml_tagname() override;
+    string xml_serialize(string const& indent="") override;
 };
 
 
-struct Jumpgate : public HasID, public HasSectorAndPosition {
+struct Jumpgate : public HasIDAndSectorAndPosition, XmlSerializable {
     Jumpgate* target;
 
     Jumpgate(Sector* const sector=nullptr, position_t const& position={0,0}, Jumpgate* const target = nullptr)
-        : HasID(IDType_Jumpgate), HasSectorAndPosition(sector, position), target(target) {};
+        : HasIDAndSectorAndPosition(IDType_Jumpgate, sector, position), target(target) {};
 
     Jumpgate(ID const& id, Sector* const sector=nullptr, position_t const& position={0,0}, Jumpgate* const target = nullptr)
-        : HasID(id, IDType_Jumpgate), HasSectorAndPosition(sector, position), target(target) {};
+        : HasIDAndSectorAndPosition(id, IDType_Jumpgate, sector, position), target(target) {};
+
+    string xml_tagname() override;
+    string xml_serialize(string const& indent="") override;
 };
 
 
-struct Station : public HasID, public HasSectorAndPosition {
+struct Station : public HasIDAndSectorAndPosition, XmlSerializable {
     Station(Sector* const sector=nullptr, position_t const& position={0,0})
-        : HasID(IDType_Station), HasSectorAndPosition(sector, position) {};
+        : HasIDAndSectorAndPosition(IDType_Station, sector, position) {};
 
     Station(ID const& id, Sector* const sector=nullptr, position_t const& position={0,0})
-        : HasID(id, IDType_Station), HasSectorAndPosition(sector, position) {};
+        : HasIDAndSectorAndPosition(id, IDType_Station, sector, position) {};
+
+    string xml_tagname() override;
+    string xml_serialize(string const& indent="") override;
 };
 
 
 struct Destination : public HasSectorAndPosition {
-    HasSectorAndPosition* object;  // sector and position are usually ignored if object is set
+    HasIDAndSectorAndPosition* object;  // sector and position are usually ignored if object is set
 
-    Destination(HasSectorAndPosition& object)
+    Destination(HasIDAndSectorAndPosition& object)
         : HasSectorAndPosition(object.sector, object.position), object(&object) {}
 
     Destination(Sector& sector, position_t const& position)
@@ -300,26 +333,31 @@ struct Destination : public HasSectorAndPosition {
 
 
 enum WeaponType { WeaponType_NONE, WeaponType_Pulse, WeaponType_Cannon, WeaponType_Beam, WeaponType_END };
-struct Weapon : public HasID {
+enum WeaponPosition { WeaponPosition_Bow=0, WeaponPosition_Port=-1, WeaponPosition_Starboard=1, WeaponPosition_END };
+struct Weapon : public HasID, XmlSerializable {
     WeaponType type;
     bool isTurret;
-    HasSectorAndPosition* parent;
-    HasSectorAndPosition* target;
-    // weaponPosition designates forward mount (0), port (-1), or starboard (1) -- doesn't apply to turrets
-    int weaponPosition;
+    HasIDAndSectorAndPosition* parent;
+    HasIDAndSectorAndPosition* target;
+    // weaponPosition designates forward mount (0), left (-1), or right (1) -- doesn't apply to turrets
+    // these values can be considered 90 degree directional multipliers
+    WeaponPosition weaponPosition;
     float cooldown;
     
-    Weapon(WeaponType type, bool isTurret, int weaponPosition, HasSectorAndPosition& parent)
+    Weapon(WeaponType type, bool isTurret, WeaponPosition weaponPosition, HasIDAndSectorAndPosition& parent)
         :
         HasID(IDType_Weapon),
         type(type), isTurret(isTurret), weaponPosition(weaponPosition), parent(&parent),
         target(nullptr), cooldown(0) {};
 
-    Weapon(ID const& id, WeaponType type, bool isTurret, int weaponPosition, HasSectorAndPosition& parent, HasSectorAndPosition* const target, float cooldown)
+    Weapon(ID const& id, WeaponType type, bool isTurret, WeaponPosition weaponPosition, HasIDAndSectorAndPosition& parent, HasIDAndSectorAndPosition* const target, float cooldown)
         :
         HasID(id, IDType_Weapon),
         type(type), isTurret(isTurret), weaponPosition(weaponPosition), parent(&parent),
         target(target), cooldown(cooldown) {};
+
+    string xml_tagname() override;
+    string xml_serialize(string const& indent="") override;
 };
 
 
@@ -347,19 +385,20 @@ string paddedShipClass(ShipType const& shipType) {
     }
 }
 enum ShipFaction { ShipFaction_Neutral, ShipFaction_Player, ShipFaction_Friend, ShipFaction_Foe, ShipFaction_END };
-struct Ship : public HasID, public HasCode, public HasName,
-              public HasSectorAndPosition,
+struct Ship : public HasIDAndSectorAndPosition,
+              public HasCode, public HasName,
               public HasDirection, public HasSpeed,
-              public HasDestination
+              public HasDestination,
+              public XmlSerializable
 {
-    ShipType              type;
-    ShipFaction           faction;
-    unsigned int          maxHull, currentHull;
-    vector<weapon_ptr>    weapons;
-    vector<weapon_ptr>    turrets;
-    HasSectorAndPosition* target;
-    bool                  docked;
-    double                timeout; // used any time the ship needs a delay (docked, dead, etc)
+    ShipType                   type;
+    ShipFaction                faction;
+    unsigned int               maxHull, currentHull;
+    vector<weapon_ptr>         weapons;
+    vector<weapon_ptr>         turrets;
+    HasIDAndSectorAndPosition* target;
+    bool                       docked;
+    double                     timeout; // used any time the ship needs a delay (docked, dead, etc)
 
     Ship(ShipType type, const unsigned int hull,
         string const& code="", string const& name="",
@@ -367,8 +406,8 @@ struct Ship : public HasID, public HasCode, public HasName,
         direction_t const& direction={0, 0}, speed_t const& speed=0,
         destination_ptr destination=nullptr)
         :
-        HasID(IDType_Ship), HasName(name), HasCode(code),
-        HasSectorAndPosition(sector, position),
+        HasIDAndSectorAndPosition(IDType_Ship, sector, position),
+        HasName(name), HasCode(code),
         HasDirection(direction), HasSpeed(speed),
         HasDestination(destination),
         type(type), maxHull(hull), currentHull(hull),
@@ -379,10 +418,10 @@ struct Ship : public HasID, public HasCode, public HasName,
         Sector* const sector, position_t const& position,
         direction_t const& direction, speed_t const& speed,
         destination_ptr destination,
-        HasSectorAndPosition* target, bool docked, float timeout)
+        HasIDAndSectorAndPosition* target, bool docked, float timeout)
         :
-        HasID(id, IDType_Ship), HasName(name), HasCode(code),
-        HasSectorAndPosition(sector, position),
+        HasIDAndSectorAndPosition(id, IDType_Ship, sector, position),
+        HasName(name), HasCode(code),
         HasDirection(direction), HasSpeed(speed),
         HasDestination(destination),
         type(type), maxHull(maxHull), currentHull(currentHull),
@@ -429,6 +468,9 @@ struct Ship : public HasID, public HasCode, public HasName,
         for (auto turret : turrets) r.push_back(&*turret);
         return r;
     }
+
+    string xml_tagname() override;
+    string xml_serialize(string const& indent="") override;
 };
 inline bool operator <(const Ship& lhs, const Ship& rhs) { return lhs.id < rhs.id; }
 inline bool operator ==(const Ship& lhs, const Ship& rhs) { return lhs.id == rhs.id; }
@@ -516,7 +558,7 @@ destination_ptr randDestination(Sector& sector, bool useJumpgates, float miscCha
     bool isMisc = false;
     if (miscChance) isMisc = randFloat() <= miscChance;
     if (!isMisc) {
-        vector<HasSectorAndPosition*> potentialDestinations;
+        vector<HasIDAndSectorAndPosition*> potentialDestinations;
         potentialDestinations.reserve(sector.stations.size() + sector.jumpgates.count());
 
         potentialDestinations.insert(potentialDestinations.end(), sector.stations.begin(), sector.stations.end());
@@ -749,7 +791,7 @@ float chanceToHit(WeaponType weaponType, bool isTurret, TargetType targetType, d
 
 
 // weaponPosition designates forward mount (0), port (-1), or starboard (1); 
-float chanceToHit(Weapon const& weapon, bool isTurret, int weaponPosition=0, HasSectorAndPosition* potentialTarget=nullptr) {
+float chanceToHit(Weapon const& weapon, bool isTurret, WeaponPosition weaponPosition=WeaponPosition_Bow, HasSectorAndPosition* potentialTarget=nullptr) {
     HasSectorAndPosition* parent = weapon.parent;
     HasSectorAndPosition* target = potentialTarget ? potentialTarget : weapon.target;
     if (!target || !parent || parent->sector != target->sector) return 0.f;
@@ -758,7 +800,9 @@ float chanceToHit(Weapon const& weapon, bool isTurret, int weaponPosition=0, Has
     if (!isTurret) {
         if (Ship* ship = dynamic_cast<Ship*>(parent)) {
             direction_t const& dir = ship->direction;
-            direction_t aim = !weaponPosition ? dir : weaponPosition < 0 ? dir.port() : dir.starboard();
+            direction_t aim = weaponPosition == WeaponPosition_Port      ? dir.port()
+                            : weaponPosition == WeaponPosition_Starboard ? dir.starboard()
+                            :                                              dir;
             // +/-45 = 90 degree aim window
             if (abs(aim.angleDeg(targetVector)) > 45) return 0.f;
         } else {
@@ -1156,7 +1200,7 @@ vector<vector<Sector>> initSectors(v2size_t const& bounds, dimensions_t const& s
             sectors[row].reserve(colCount);
             for (size_t col=0; col<colCount; ++col) {
                 sprintf(name, "%c%02zu", 'A'+col, 1+row);
-                sectors[row].emplace_back(name, size);
+                sectors[row].emplace_back(pair<size_t, size_t>{row, col}, name, size);
             }
         }
     }
@@ -1383,11 +1427,15 @@ vector<Ship> initShips(size_t const& shipCount, vector<vector<Sector>>& sectors,
         bool isSideFire = isShipSideFire(type);
         for (size_t i = 0; i < (isSideFire ? 2 : 1); ++i) {
             for (WeaponType weapon : weapons) {
-                ship.weapons.emplace(ship.weapons.end(), weapon_ptr(new Weapon(weapon, false, isSideFire ? i ? -1 : 1 : 0, ship)));
+                WeaponPosition weaponPosition = isSideFire
+                                              ? i ? WeaponPosition_Port
+                                                  : WeaponPosition_Starboard
+                                              : WeaponPosition_Bow;
+                ship.weapons.emplace(ship.weapons.end(), weapon_ptr(new Weapon(weapon, false, weaponPosition, ship)));
             }
         }
         for (WeaponType turret : turrets) {
-            ship.turrets.emplace(ship.turrets.end(), weapon_ptr(new Weapon(turret, true, 0, ship)));
+            ship.turrets.emplace(ship.turrets.end(), weapon_ptr(new Weapon(turret, true, WeaponPosition_Bow, ship)));
         }
         // friend/foe
         if (isPlayerShip) {
@@ -1605,7 +1653,11 @@ void acquireTargets(Sector& sector) {
             // main weapons
             for (size_t i=0; i < ship->weapons.size(); ++i) {
                 Weapon& weapon = *(ship->weapons[i]);
-                int weaponPosition = isShipSideFire(ship->type) ? (i < ship->weapons.size()/2) ? -1 : 1 : 0;
+                WeaponPosition weaponPosition = isShipSideFire(ship->type)
+                                              ? (i < ship->weapons.size()/2)
+                                                  ? WeaponPosition_Port
+                                                  : WeaponPosition_Starboard
+                                              : WeaponPosition_Bow;
                 float toHit = chanceToHit(weapon, false, weaponPosition, target);
                 if (toHit > 0.f) {
                     if (!weaponToHit.count(&weapon)) {
@@ -1620,7 +1672,7 @@ void acquireTargets(Sector& sector) {
             // turrets
             for (size_t i=0; i < ship->turrets.size(); ++i) {
                 Weapon& turret = *(ship->turrets[i]);
-                float toHit = chanceToHit(turret, true, 0, target);
+                float toHit = chanceToHit(turret, true, WeaponPosition_Bow, target);
                 if (toHit > 0.f) {
                     if (!weaponToHit.count(&turret)) {
                         weaponToHit.emplace(&turret, std::move(pair<Ship*, float>(target, toHit)));
@@ -1827,11 +1879,15 @@ void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& statio
             bool isSideFire = isShipSideFire(type);
             for (size_t i = 0; i < (isSideFire ? 2 : 1); ++i) {
                 for (WeaponType weapon : weapons) {
-                    ship.weapons.emplace(ship.weapons.end(), weapon_ptr(new Weapon(weapon, false, isSideFire ? i ? -1 : 1 : 0, ship)));
+                    WeaponPosition weaponPosition = isSideFire
+                                                ? i ? WeaponPosition_Port
+                                                    : WeaponPosition_Starboard
+                                                : WeaponPosition_Bow;
+                    ship.weapons.emplace(ship.weapons.end(), weapon_ptr(new Weapon(weapon, false, weaponPosition, ship)));
                 }
             }
             for (WeaponType turret : turrets) {
-                ship.turrets.emplace(ship.turrets.end(), weapon_ptr(new Weapon(turret, true, 0, ship)));
+                ship.turrets.emplace(ship.turrets.end(), weapon_ptr(new Weapon(turret, true, WeaponPosition_Bow, ship)));
             }
 
             // friend/foe
@@ -1857,6 +1913,233 @@ void respawnShips(vector<Ship>& ships, Ship* playerShip, vector<Station>& statio
             sector.ships = sectorShips;
         }
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// SERIALIZATION
+// ---------------------------------------------------------------------------
+
+
+const string XML_INDENT = "  ";
+
+
+typedef vector<pair<string, string>> xml_attrs_t;
+string xml_open(string tagname, xml_attrs_t const& attrs={}, bool selfClose=false) {
+    ostringstream os;
+    os << '<' << tagname;
+    for (auto attr : attrs) os << ' ' << attr.first << "=\"" << attr.second << '"';
+    os << (selfClose ? "/>" : ">");
+    return os.str();
+}
+
+
+string xml_close(string tagname) {
+    ostringstream os;
+    os << "</" << tagname << '>';
+    return os.str();
+}
+
+
+string xml_serializableId(ID id) {
+    char buf[13];
+    snprintf(buf, 13, "[0x%04zx]", id);
+    return string(buf);
+}
+
+
+string xml_serializableId(HasID* hasId) {
+    return hasId ? xml_serializableId(hasId->id) : "";
+}
+
+
+template <typename T>
+string xml_serializableNumber(T const& t) {
+    ostringstream os;
+    os << t;
+    return os.str();
+}
+
+
+string xml_serializableBool(bool v) {
+    return v ? "true" : "false";
+}
+
+
+template <typename T, typename U>
+string xml_serializableVector2(Vector2<T,U> const& v) {
+    ostringstream os;
+    os << '{' << v.x << ',' << v.y << '}';
+    return os.str();
+}
+
+
+template <typename T>
+string xml_serializablePair(pair<T,T> const& v) {
+    ostringstream os;
+    os << '{' << v.first << ',' << v.second << '}';
+    return os.str();
+}
+
+
+string Sector::xml_tagname() { return "sector"; }
+string Sector::xml_serialize(string const& indent) {
+    ostringstream os;
+    string subindent  = indent    + XML_INDENT;
+    string subindent2 = subindent + XML_INDENT;
+    os << indent << xml_open(xml_tagname(), {
+        {"id",     xml_serializableId(id)},
+        {"rowcol", xml_serializablePair(rowcol)},
+        {"name",   name},
+        {"size",   xml_serializableVector2(size)},
+    }) << endl;
+    auto jumpgates_ = jumpgates.all();
+    if (!jumpgates_.empty()) {
+        os << subindent << xml_open("jumpgates", {{"count", xml_serializableNumber(jumpgates_.size())}}) << endl;
+        for (auto jumpgate : jumpgates_) os << jumpgate->xml_serialize(subindent2) << endl;
+        os << subindent << xml_close("jumpgates") << endl;
+    }
+    if (!stations.empty()) {
+        os << subindent << xml_open("stations", {{"count", xml_serializableNumber(stations.size())}}) << endl;
+        for (auto station : stations) os << station->xml_serialize(subindent2) << endl;
+        os << subindent << xml_close("stations") << endl;
+    }
+    if (!ships.empty()) {
+        os << subindent << xml_open("ships", {{"count", xml_serializableNumber(ships.size())}}) << endl;
+        for (auto ship : ships) os << ship->xml_serialize(subindent2) << endl;
+        os << subindent << xml_close("ships") << endl;
+    }
+    os << indent << xml_close(xml_tagname());
+    return os.str();
+}
+
+
+string Jumpgate::xml_tagname() { return "jumpgate"; }
+string Jumpgate::xml_serialize(string const& indent) {
+    ostringstream os;
+    string nesw;
+    if (sector) {
+        if      (this == sector->jumpgates.north) nesw="north";
+        else if (this == sector->jumpgates.east)  nesw="east";
+        else if (this == sector->jumpgates.south) nesw="south";
+        else if (this == sector->jumpgates.west)  nesw="west";
+    }
+    os << indent << xml_open(xml_tagname(), {
+        {"id",       xml_serializableId(id)},
+//        {"sector",   xml_serializableId(sector)},
+        {"nesw",     nesw},
+        {"position", xml_serializableVector2(position)},
+        {"target",   xml_serializableId(target)},
+    }, true);
+    return os.str();
+}
+
+
+string Station::xml_tagname() { return "station"; }
+string Station::xml_serialize(string const& indent) {
+    ostringstream os;
+    os << indent << xml_open(xml_tagname(), {
+        {"id",       xml_serializableId(id)},
+//        {"sector",   xml_serializableId(sector)},
+        {"position", xml_serializableVector2(position)},
+    }, true);
+    return os.str();
+}
+
+
+string Ship::xml_tagname() { return "ship"; }
+string Ship::xml_serialize(string const& indent) {
+    ostringstream os;
+    string subindent  = indent    + XML_INDENT;
+    string subindent2 = subindent + XML_INDENT;
+    string faction_;
+    switch (faction) {
+        case ShipFaction_Player  : faction_ = "Player";  break;
+        case ShipFaction_Friend  : faction_ = "Friend";  break;
+        case ShipFaction_Foe     : faction_ = "Foe";     break;
+        default                  : faction_ = "Neutral"; break;
+    }
+    xml_attrs_t attrs = {
+        {"id",           xml_serializableId(id)},
+        {"type",         shipClass(type)},
+        {"faction",      faction_},
+        {"code",         code},
+        {"name",         name},
+        {"max-hull",     xml_serializableNumber(maxHull)},
+        {"current-hull", xml_serializableNumber(currentHull)},
+//        {"sector",       xml_serializableId(sector)},
+        {"position",     xml_serializableVector2(position)},
+        {"direction",    xml_serializableVector2(direction)},
+        {"speed",        xml_serializableNumber(speed)},
+    };
+    if (destination) {
+        if (destination->object) attrs.emplace_back("destination-object", xml_serializableId(destination->object));
+        attrs.emplace_back("destination-sector",  xml_serializableId(destination->sector));
+        attrs.emplace_back("destination-position", xml_serializableVector2(destination->position));
+    }
+    if (target)        attrs.emplace_back("target",  xml_serializableId(target));
+    if (docked)        attrs.emplace_back("docked",  xml_serializableBool(docked));
+    if (timeout > 0.0) attrs.emplace_back("timeout", xml_serializableNumber(timeout));
+    os << indent << xml_open(xml_tagname(), attrs) << endl;
+    if (!weapons.empty()) {
+        os << subindent << xml_open("weapons", {{"count", xml_serializableNumber(weapons.size())}}) << endl;
+        for (auto weapon : weapons) os << weapon->xml_serialize(subindent2) << endl;
+        os << subindent << xml_close("weapons") << endl;
+    }
+    if (!turrets.empty()) {
+        os << subindent << xml_open("turrets", {{"count", xml_serializableNumber(turrets.size())}}) << endl;
+        for (auto turret : turrets) os << turret->xml_serialize(subindent2) << endl;
+        os << subindent << xml_close("turrets") << endl;
+    }
+    os << indent << xml_close(xml_tagname());
+    return os.str();
+}
+
+
+string Weapon::xml_tagname() { return "weapon"; }
+string Weapon::xml_serialize(string const& indent) {
+    ostringstream os;
+    string subindent  = indent    + XML_INDENT;
+    string subindent2 = subindent + XML_INDENT;
+    string type_;
+    string weaponPosition_;
+    switch (type) {
+        case WeaponType_Pulse  : type_ = "Pulse";  break;
+        case WeaponType_Cannon : type_ = "Cannon"; break;
+        case WeaponType_Beam   : type_ = "Beam";   break;
+    }
+    switch (weaponPosition) {
+        case WeaponPosition_Bow       : weaponPosition_ = "Bow";       break;
+        case WeaponPosition_Port      : weaponPosition_ = "Port";      break;
+        case WeaponPosition_Starboard : weaponPosition_ = "Starboard"; break;
+    }
+    xml_attrs_t attrs = {
+        {"id",           xml_serializableId(id)},
+        {"type",         type_},
+//        {"is-turret",    xml_serializeableBool(isTurret)},
+//        {"parent",       xml_serializableId(parent)},
+    };
+    if (target)         attrs.emplace_back("target",          xml_serializableId(target));
+    if (weaponPosition) attrs.emplace_back("weapon-position", weaponPosition_);
+    if (cooldown > 0.f) attrs.emplace_back("cooldown",        xml_serializableNumber(cooldown));
+    os << indent << xml_open(xml_tagname(), attrs, true);
+    return os.str();
+}
+
+
+void xml_serialize_savegame(std::ostream& os, vector<vector<Sector>> const& sectors, vector<Jumpgate> const& jumpgates, vector<Station> const& stations, vector<Ship>const& ships) {
+    string subindent = XML_INDENT;
+    os << xml_open("savegame") << endl
+       << subindent << xml_open("sectors", {{"count", xml_serializableNumber(sectors.size() * sectors[0].size())}}, true) << endl
+       << subindent << xml_open("jumpgates", {{"count", xml_serializableNumber(jumpgates.size())}}, true) << endl
+       << subindent << xml_open("stations", {{"count", xml_serializableNumber(stations.size())}}, true) << endl
+       << subindent << xml_open("ships", {{"count", xml_serializableNumber(ships.size())}}, true) << endl;
+    for (auto sectorRow : sectors) {
+        for (auto sector : sectorRow) {
+            os << sector.xml_serialize(subindent) << endl;
+        }
+    }
+    os << xml_close("savegame");
 }
 
 
@@ -1910,6 +2193,21 @@ int main(int argc, char** argv) {
                  << endl;
 
             lastTick = thisTick;
+
+            // ---------------------------------------------------------------
+            // TRIGGER SERIALIZATION AND EXIT WHEN COMPLETE
+            // ---------------------------------------------------------------
+
+            static size_t count = 0;
+            count++;
+            if (count == 30) {
+                duration<double> d_save;
+                t = steady_clock::now();
+                xml_serialize_savegame(cerr, sectors, jumpgates, stations, ships);
+                d_save = steady_clock::now() - t;
+                cerr << endl << "save time: " << (d_save.count() * 1000) << "ms" << endl;
+                return;
+            }
         }
     };
 
