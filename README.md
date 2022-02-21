@@ -9,6 +9,13 @@ Displays in-sector ship information, a sector map, and a global map showing how 
 This gist will remain a simple base, but may be updated with more features occasionally to increase complexity.
 Separate gists will be created for versions and/or feature tests.
 
+**Build and Run:**
+```
+$ cd /path/to/tinyspace
+$ make
+$ ./tinyspace --color
+```
+
 **Options:**
 - `--color` - Enable color display (for terminals that support ANSI color codes)
 - `--no-jumpgates` - Disable jumpgate travel and revert to the original fly-between-sectors style.
@@ -23,15 +30,16 @@ This was an oversight and should be fixed in v4.
 
 **New in this version (v3 - snapshot serialization):**
 - Data snapshots and background saves
+- Separated single-file example into multiple files
 
 **Details:**
 - Runs for 10 seconds.
 - Takes a snapshot of live game data.
-- Serializes live game data to `tiny-space_01-live.txt` (on main thread).
-- Spawns a background thread that waits 5 seconds then serializes snapshot to `tiny-space_02-snap.txt` (while main thread continues)
+- Serializes live game data to `tinyspace_01-live.txt` (on main thread).
+- Spawns a background thread that waits 5 seconds then serializes snapshot to `tinyspace_02-snap.txt` (while main thread continues)
 - Continues simulation for 10 seconds.
-- Serializes live game data to `tiny-space_03-live.txt` (on main thread).
-- Spawns a background thread that waits 5 seconds then serializes (original) snapshot to `tiny-space_04-snap.txt` (while main thread continues)
+- Serializes live game data to `tinyspace_03-live.txt` (on main thread).
+- Spawns a background thread that waits 5 seconds then serializes (original) snapshot to `tinyspace_04-snap.txt` (while main thread continues)
 - Exits.
 
 ## Implementation
