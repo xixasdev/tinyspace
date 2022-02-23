@@ -53,7 +53,7 @@ string shipString( Ship const& ship, bool useColor, unsigned int color )
     {
         os << beginColorString( color );
     }
-    if ( ship.code->size() )
+    if ( ship.code.size() )
     {
         os << /*" code:"*/ " " << ship.code;
     }
@@ -88,7 +88,7 @@ string shipString( Ship const& ship, bool useColor, unsigned int color )
     os << /*" class:"*/ " " << paddedShipClass( ship.type );
     if ( ship.target && ship.sector == ship.target->sector )
     {
-        if ( auto target = dynamic_cast<Ship*>( ship.target() ))
+        if ( auto target = dynamic_cast<Ship*>( ship.target ))
         {
             os << " -> "
                << beginColorString( target->faction == ShipFaction_Player ? PLAYER_COLOR
@@ -132,7 +132,7 @@ string shipString( Ship const& ship, bool useColor, unsigned int color )
 vector<string> createSectorShipsList( Sector& sector, Ship* playerShip, bool const useColor )
 {
     vector<string> shipsList;
-    for ( auto ship : sector.ships() )
+    for ( auto ship : sector.ships )
     {
         if ( ship->docked ) continue;
         std::ostringstream os;
@@ -185,7 +185,7 @@ vector<string> createSectorMap( Sector& sector, Ship* playerShip, bool useColor 
         std::ostringstream os;
         os << leftPadding << "+-[ "
            << colorString( PLAYER_COLOR, sector.name, useColor )
-           << " ]" << string((( sector.size.x+1 ) * 3 ) - sector.name->size() - 5, '-' )
+           << " ]" << string((( sector.size.x+1 ) * 3 ) - sector.name.size() - 5, '-' )
            << '+';
         sectorMap.push_back( os.str() );
     }
@@ -216,16 +216,8 @@ vector<string> createSectorMap( Sector& sector, Ship* playerShip, bool useColor 
         }
     };
 
-    // Display saving message
-    if ( isSaving )
-    {
-        string saveString( "[ SAVE IN PROGRESS... BUT GAME'S STILL RUNNING! ]" );
-        size_t col = sectorMap[0].size()/2 - saveString.size()/2 + 3;
-        addReplacementString( { 0, col }, 0, saveString );
-    }
-
     // ships
-    for ( auto ship : sector.ships() )
+    for ( auto ship : sector.ships )
     {
         bool isPlayerShip    = ship == playerShip;
         bool isPlayerFaction = ship->faction == ShipFaction_Player;
@@ -255,7 +247,7 @@ vector<string> createSectorMap( Sector& sector, Ship* playerShip, bool useColor 
             if ( isPlayerShip )
             {
                 auto& dir = ship->direction;
-                auto dirMax = std::max( dir.y(), 0.0f );
+                auto dirMax = std::max( dir.y, 0.0f );
                 shipStr = "v";
                 if ( dir.x > 0 && dir.x > dirMax )
                 {
@@ -400,9 +392,9 @@ vector<string> createGlobalMap( sectors_t const& sectors, Ship* playerShip, bool
                 playerSectorIndex = { i, j };
             }
 
-            size_t shipCount = sector.ships->size();
+            size_t shipCount = sector.ships.size();
             bool hasPlayerProperty = false;
-            for ( auto ship : sector.ships() )
+            for ( auto ship : sector.ships )
             {
                 if ( ship->currentHull <= 0.f )
                 {

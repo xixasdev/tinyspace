@@ -10,7 +10,6 @@
 #include <set>
 #include <vector>
 #include "vector2.hpp"
-#include "saveable.hpp"
 
 
 namespace tinyspace {
@@ -70,37 +69,6 @@ typedef vector<location_ptr_t>     location_ptrs_t;
 
 typedef set<Station*>              station_ptrs_set_t;
 typedef set<Ship*>                 ship_ptrs_set_t;
-
-
-// Saveable types
-typedef Saveable<bool>          bool_s;
-typedef Saveable<float>         float_s;
-typedef Saveable<double>        double_s;
-typedef Saveable<int>           int_s;
-typedef Saveable<unsigned int>  unsigned_int_s;
-typedef Saveable<size_t>        size_s;
-typedef Saveable<string>        string_s;
-
-typedef Saveable<id_t>           id_s;
-typedef Saveable<IdType>         IdType_s;
-typedef Saveable<WeaponType>     WeaponType_s;
-typedef Saveable<WeaponPosition> WeaponPosition_s;
-typedef Saveable<ShipType>       ShipType_s;
-typedef Saveable<ShipFaction>    ShipFaction_s;
-
-typedef SaveableVector2<float> v2float_s;
-typedef v2float_s              dimensions_s;
-typedef v2float_s              position_s;
-typedef v2float_s              direction_s;
-typedef float_s                speed_s;
-typedef float_s                distance_s;
-
-typedef Saveable<ship_ptrs_set_t>   ship_ptrs_set_s;
-typedef Saveable<Sector*>           sector_ptr_s;
-typedef Saveable<destination_ptr_t> destination_ptr_s;
-typedef Saveable<weapon_ptr_t>      weapon_ptr_s;
-typedef Saveable<weapon_ptrs_t>     weapon_ptrs_s;
-typedef Saveable<target_ptr_t>      target_ptr_s;
 
 
 } // tinyspace

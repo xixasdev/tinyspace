@@ -33,8 +33,8 @@ enum IdType : unsigned int
 
 struct HasID
 {
-    id_s id;
-    IdType_s idType;
+    id_t id;
+    IdType idType;
 
     HasID( IdType const& idType );
     HasID( id_t const& id, IdType const& idType );
@@ -49,7 +49,7 @@ private:
 
 struct HasCode
 {
-    string_s code;
+    string code;
 
     HasCode( string const& code="" );
     ~HasCode();
@@ -58,7 +58,7 @@ struct HasCode
 
 struct HasName
 {
-    string_s name;
+    string name;
 
     HasName( string const& name="" );
     ~HasName();
@@ -67,7 +67,7 @@ struct HasName
 
 struct HasSize
 {
-    dimensions_s size;
+    dimensions_t size;
 
     HasSize( dimensions_t const& size={ 0, 0 } );
     ~HasSize();
@@ -76,7 +76,7 @@ struct HasSize
 
 struct HasPosition
 {
-    position_s position;
+    position_t position;
 
     HasPosition( position_t const& position={ 0, 0 } );
     ~HasPosition();
@@ -85,7 +85,7 @@ struct HasPosition
 
 struct HasDirection
 {
-    direction_s direction;
+    direction_t direction;
 
     HasDirection( direction_t const& direction={ 0, 0 } );
     ~HasDirection();
@@ -94,7 +94,7 @@ struct HasDirection
 
 struct HasSpeed
 {
-    speed_s speed;
+    speed_t speed;
 
     HasSpeed( speed_t const& speed=0 );
     ~HasSpeed();
@@ -103,7 +103,7 @@ struct HasSpeed
 
 struct HasSector
 {
-    sector_ptr_s sector;
+    Sector* sector;
 
     HasSector( Sector* const sector=nullptr );
     ~HasSector();
@@ -127,7 +127,7 @@ struct HasIDAndSectorAndPosition : public HasID, public HasSectorAndPosition
 
 struct HasDestination
 {
-    destination_ptr_s destination;
+    destination_ptr_t destination;
 
     HasDestination( destination_ptr_t destination=nullptr );
     ~HasDestination();
@@ -169,7 +169,7 @@ struct Sector : public HasID, public HasName, public HasSize
     SectorNeighbors        neighbors;
     SectorJumpgates        jumpgates;
     station_ptrs_set_t     stations;
-    ship_ptrs_set_s const& ships = _ships;
+    ship_ptrs_set_t const& ships = _ships;
 
     Sector( pair<size_t, size_t> rowcol, string const& name="", dimensions_t const& size={ 0, 0 } );
     Sector( id_t const& id, pair<size_t, size_t> rowcol, string const& name="", dimensions_t const& size={ 0, 0 } );
@@ -178,7 +178,7 @@ struct Sector : public HasID, public HasName, public HasSize
     void setShips( ship_ptrs_set_t&& ships );
 
 private:
-    ship_ptrs_set_s _ships;
+    ship_ptrs_set_t _ships;
 };
 
 
@@ -237,11 +237,11 @@ struct Weapon : public HasID
     WeaponType type;
     bool isTurret;
     target_ptr_t parent;
-    target_ptr_s target;
+    target_ptr_t target;
     // weaponPosition designates forward mount (0), left (-1), or right (1) -- doesn't apply to turrets
     // these values can be considered 90 degree directional multipliers
     WeaponPosition weaponPosition;
-    float_s cooldown;
+    float cooldown;
     
     Weapon( WeaponType type, bool isTurret, WeaponPosition weaponPosition, HasIDAndSectorAndPosition& parent );
     Weapon( id_t const& id, WeaponType type, bool isTurret, WeaponPosition weaponPosition, HasIDAndSectorAndPosition& parent, HasIDAndSectorAndPosition* const target, float cooldown );
@@ -278,14 +278,14 @@ struct Ship : public HasIDAndSectorAndPosition,
               public HasDirection, public HasSpeed,
               public HasDestination
 {
-    ShipType_s           type;
-    ShipFaction_s        faction;
-    unsigned_int_s       maxHull, currentHull;
-    weapon_ptrs_s const& weapons = _weapons;
-    weapon_ptrs_s const& turrets = _turrets;
-    target_ptr_s         target;
-    bool_s               docked;
-    double_s             timeout; // used any time the ship needs a delay (docked, dead, etc)
+    ShipType             type;
+    ShipFaction          faction;
+    unsigned int         maxHull, currentHull;
+    weapon_ptrs_t const& weapons = _weapons;
+    weapon_ptrs_t const& turrets = _turrets;
+    target_ptr_t         target;
+    bool                 docked;
+    double               timeout; // used any time the ship needs a delay (docked, dead, etc)
 
     Ship( Ship&& o );
     Ship( ShipType type, const unsigned int hull,
@@ -310,8 +310,8 @@ struct Ship : public HasIDAndSectorAndPosition,
     weapon_ptrs_t weaponsAndTurrets();
 
 private:
-    weapon_ptrs_s _weapons;
-    weapon_ptrs_s _turrets;
+    weapon_ptrs_t _weapons;
+    weapon_ptrs_t _turrets;
 };
 bool operator <(const Ship& lhs, const Ship& rhs);
 bool operator ==(const Ship& lhs, const Ship& rhs);

@@ -26,11 +26,9 @@
 #include "actions.hpp"
 #include "constants.hpp"
 #include "init.hpp"
-#include "saveable.hpp"
 #include "types.hpp"
 #include "ui.hpp"
 #include "vector2.hpp"
-#include "xmlserializer.hpp"
 
 
 using namespace tinyspace;
@@ -44,16 +42,6 @@ using std::endl;
 using std::ofstream;
 using std::ostream;
 using std::thread;
-
-
-// ---------------------------------------------------------------------------
-// SAVE STATE SYNC ATOMICS
-// ---------------------------------------------------------------------------
-
-
-atomic<bool> willSave(false);
-atomic<bool> saveComplete(false);
-atomic<bool> endGame(false);
 
 
 // ---------------------------------------------------------------------------
@@ -83,40 +71,12 @@ int main( int argc, char** argv )
 
     auto& playerShip = ships[0];
 
-    auto performSave = [ & ]( ostream& os )
-    {
-        duration<double> d_save;
-        time_point<steady_clock> t;
-        
-        t = steady_clock::now();
-        XmlSerializer xml;
-        os << xml.savegame( sectors, jumpgates, stations, ships ) << endl;
-//        update_aftersave(); // commented to allow main thread control for this example
-        d_save = steady_clock::now() - t;
-        os << endl << "save time: " << ( d_save.count() * 1000 ) << "ms" << endl;
-    };
-
-    auto saveThreadFn = [ & ]( ostream& os, int delay=0 )
-    {
-//        isSaving = true; // commented to allow main thread control for this example
-        willSave = false;
-
-        // artificially make the save state take longer
-        if ( delay ) std::this_thread::sleep_for( milliseconds( delay ));
-
-        os << "SNAP" << endl << endl;
-        performSave( os );
-
-//        isSaving = false; // commented to allow main thread control for this example
-        saveComplete = true;
-    };
-
     auto mainThreadFn = [ & ]()
     {
         duration<double>         d1, d2, delta;
         time_point<steady_clock> t, thisTick, nextTick = steady_clock::now(), lastTick = nextTick;
 
-        while ( ! endGame )
+        while ( true )
         {
             std::this_thread::sleep_until( nextTick );
 
@@ -140,59 +100,6 @@ int main( int argc, char** argv )
                  << "display: " << ( d2.count() * 1000 )    << "ms" << endl;
 
             lastTick = thisTick;
-
-            // ---------------------------------------------------------------
-            // TRIGGER SERIALIZATION AND EXIT WHEN COMPLETE
-            // ---------------------------------------------------------------
-
-            static size_t count = 0;
-            count++;
-            // save on background thread around 10 and 20 seconds (at ~3 frames per second)
-            if ( count == 30 || count == 60 )
-            {
-
-                // write out live state for comparison
-                livefile.open( count == 30 ? "tinyspace_01-live.txt" : "tinyspace_03-live.txt" );
-                livefile << "LIVE" << endl << endl;
-                performSave( livefile );
-                livefile.close();
-
-                willSave = true;
-
-                // under main thread control for this example.
-                // first snapshot should match live (as printed above).
-                // isSaving stays true between the two save runs.
-                // their outputs should be exactly the same!
-                isSaving = true; 
-
-                snapfile.open( count == 30 ? "tinyspace_02-snap.txt" : "tinyspace_04-snap.txt" );
-                saveThread.store( new thread( saveThreadFn, std::ref( snapfile ), 5000 ));
-            }
-
-            // join save thread when complete
-            if ( saveComplete )
-            {
-                if ( count > 60 )
-                { // hold save state open for about 10 seconds between background saves
-                    isSaving = false; // under main thread control for this example
-                    update_aftersave(); // under main thread control for this example
-                }
-
-                saveComplete = false;
-
-                if ( saveThread.load() )
-                {
-                    saveThread.load()->join();
-                    saveThread = nullptr;
-                    snapfile.close();
-                }
-            }
-
-            // exit around 30 seconds (at ~3 frames per second)
-            if ( count >= 90 && !willSave && !isSaving && !saveComplete )
-            {
-                endGame = true;
-            }
         }
     };
 

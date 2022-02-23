@@ -197,9 +197,9 @@ void acquireTargets( Sector& sector )
 {
     std::map<Ship*, ship_ptrs_t> potentialTargets;
     ship_ptrs_t sectorShips;
-    sectorShips.reserve( sector.ships->size() );
+    sectorShips.reserve( sector.ships.size() );
 
-    for ( Ship* ship : sector.ships() )
+    for ( Ship* ship : sector.ships )
     {
         // Clear dead ships' targets
         if ( ship->currentHull <= 0.f )
@@ -228,7 +228,7 @@ void acquireTargets( Sector& sector )
     // Map targets potentially in range
     for ( Ship* ship : sectorShips )
     {
-        if ( ! ship->weapons->empty() || !ship->turrets->empty() )
+        if ( ! ship->weapons.empty() || !ship->turrets.empty() )
         {
             for ( Ship* otherShip : sectorShips )
             {
@@ -261,8 +261,8 @@ void acquireTargets( Sector& sector )
             {
                 ship->target = nullptr;
             }
-            for ( auto& weapon : ship->weapons() ) if ( weapon->target ) weapon->target = nullptr;
-            for ( auto& turret : ship->turrets() ) if ( turret->target ) turret->target = nullptr;
+            for ( auto& weapon : ship->weapons ) if ( weapon->target ) weapon->target = nullptr;
+            for ( auto& turret : ship->turrets ) if ( turret->target ) turret->target = nullptr;
         }
     }
 
@@ -288,11 +288,11 @@ void acquireTargets( Sector& sector )
             }
 
             // main weapons
-            for ( size_t i=0; i < ship->weapons->size(); ++i )
+            for ( size_t i=0; i < ship->weapons.size(); ++i )
             {
-                Weapon& weapon = *( ship->weapons()[ i ] );
+                Weapon& weapon = *( ship->weapons[ i ] );
                 WeaponPosition weaponPosition = isShipSideFire( ship->type )
-                                              ? ( i < ship->weapons->size()/2 )
+                                              ? ( i < ship->weapons.size()/2 )
                                                   ? WeaponPosition_Port
                                                   : WeaponPosition_Starboard
                                               : WeaponPosition_Bow;
@@ -313,9 +313,9 @@ void acquireTargets( Sector& sector )
                 }
             }
             // turrets
-            for ( size_t i=0; i < ship->turrets->size(); ++i )
+            for ( size_t i=0; i < ship->turrets.size(); ++i )
             {
-                Weapon& turret = *( ship->turrets()[ i ] );
+                Weapon& turret = *( ship->turrets[ i ] );
                 float toHit = chanceToHit( turret, true, WeaponPosition_Bow, target );
                 if ( toHit > 0.f )
                 {
@@ -375,7 +375,7 @@ void acquireTargets( Sector& sector )
         {
             Ship* bestTarget;
             Weapon* p;
-            for ( auto& weapon : ship->weapons() )
+            for ( auto& weapon : ship->weapons )
             {
                 p = &*weapon;
                 bestTarget = nullptr;
@@ -388,7 +388,7 @@ void acquireTargets( Sector& sector )
                     p->target = bestTarget;
                 }
             }
-            for ( auto& turret : ship->turrets() )
+            for ( auto& turret : ship->turrets )
             {
                 p = &*turret;
                 bestTarget = nullptr;
@@ -492,7 +492,7 @@ void fireWeapons(
                     currentCooldown = shot.second;
                     continue;
                 }
-                if ( auto target = dynamic_cast<Ship*>( weapon->target() ))
+                if ( auto target = dynamic_cast<Ship*>( weapon->target ))
                 {
                     canFire = !target->docked && target->currentHull >= 0;
                     if ( canFire )
@@ -529,7 +529,7 @@ void fireWeapons(
                                         // adjust beam weapon damage
                                         damage *= cooldown - appliedDelta;
                                     }
-                                    if ( auto target = dynamic_cast<Ship*>( weapon->target() ))
+                                    if ( auto target = dynamic_cast<Ship*>( weapon->target ))
                                     {
                                         target->currentHull = std::max( 0.f, target->currentHull - damage );
                                         if ( target->currentHull <= 0 )
@@ -552,8 +552,8 @@ void fireWeapons(
     // Update live weapon cooldowns
     for ( auto& ship : ships )
     {
-        for ( auto& weapon : ship.weapons() ) if (weapon->cooldown > 0.f) weapon->cooldown -= delta;
-        for ( auto& turret : ship.turrets() ) if (turret->cooldown > 0.f) turret->cooldown -= delta;
+        for ( auto& weapon : ship.weapons ) if (weapon->cooldown > 0.f) weapon->cooldown -= delta;
+        for ( auto& turret : ship.turrets ) if (turret->cooldown > 0.f) turret->cooldown -= delta;
     }
 }
 

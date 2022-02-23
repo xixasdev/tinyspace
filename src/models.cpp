@@ -545,10 +545,10 @@ Ship& Ship::operator =( Ship&& o )
 
     weapon_ptrs_t weapons;
     weapon_ptrs_t turrets;
-    weapons.reserve( o._weapons->size() );
-    turrets.reserve( o._turrets->size() );
-    for ( auto& weapon : o._weapons() ) weapons.push_back( weapon );
-    for ( auto& turret : o._turrets() ) turrets.push_back( turret );
+    weapons.reserve( o._weapons.size() );
+    turrets.reserve( o._turrets.size() );
+    for ( auto& weapon : o._weapons ) weapons.push_back( weapon );
+    for ( auto& turret : o._turrets ) turrets.push_back( turret );
     setWeapons( std::move( weapons ));
     setTurrets( std::move( turrets ));
 
@@ -563,9 +563,9 @@ Ship& Ship::operator =( Ship&& o )
 weapon_ptrs_t Ship::weaponsAndTurrets()
 {
     weapon_ptrs_t r;
-    r.reserve( weapons->size() + turrets->size() );
-    for ( auto& weapon : _weapons() ) r.push_back( weapon );
-    for ( auto& turret : _turrets() ) r.push_back( turret );
+    r.reserve( weapons.size() + turrets.size() );
+    for ( auto& weapon : _weapons ) r.push_back( weapon );
+    for ( auto& turret : _turrets ) r.push_back( turret );
     return r;
 }
 
