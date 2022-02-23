@@ -26,6 +26,7 @@ This was an oversight and should be fixed in v4.
 - Added factions and player-owned ships
 - Added stations, docking, and repair
 - Added simple combat, a killscreen with timer, and automatic respawn in a new ship/location
+- Separated single-file example into multiple files
 
 ## Sample Simulation
 
