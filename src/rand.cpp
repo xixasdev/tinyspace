@@ -188,12 +188,12 @@ float chanceToHit(
     }
     switch ( targetType )
     {
-        case TargetType_Courier:    chance *= COURIER_ACCURACY_MULTIPLIER; break;
-        case TargetType_Transport:  chance *= COURIER_ACCURACY_MULTIPLIER; break;
-        case TargetType_Scout:      chance *= COURIER_ACCURACY_MULTIPLIER; break;
-        case TargetType_Corvette:   chance *= COURIER_ACCURACY_MULTIPLIER; break;
-        case TargetType_Frigate:    chance *= COURIER_ACCURACY_MULTIPLIER; break;
-        default:                                                           break;
+        case TargetType_Courier:    chance *= COURIER_ACCURACY_MULTIPLIER;   break;
+        case TargetType_Transport:  chance *= TRANSPORT_ACCURACY_MULTIPLIER; break;
+        case TargetType_Scout:      chance *= SCOUT_ACCURACY_MULTIPLIER;     break;
+        case TargetType_Corvette:   chance *= CORVETTE_ACCURACY_MULTIPLIER;  break;
+        case TargetType_Frigate:    chance *= FRIGATE_ACCURACY_MULTIPLIER;   break;
+        default:                                                             break;
     }
     return chance;
 }
